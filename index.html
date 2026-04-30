@@ -331,6 +331,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
       <div class="nav-item" data-route="contracts"><span class="icn">◫</span> Kontrakter</div>
       <div class="nav-item" data-route="members"><span class="icn">◉</span> Medlemmer</div>
       <div class="nav-item" data-route="honorar"><span class="icn">⌗</span> Honorar</div>
+      <div class="nav-item" data-route="invoices"><span class="icn">¤</span> Fakturaer</div>
     </div>
     <div class="sidebar-foot">
       <div class="nav-item" id="logoutAdmin"><span class="icn">←</span> Log ud</div>
@@ -342,6 +343,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
     <div class="mn-item" data-route="contracts"><span class="mn-icn">◫</span>Kontrakter</div>
     <div class="mn-item" data-route="members"><span class="mn-icn">◉</span>Medlemmer</div>
     <div class="mn-item" data-route="honorar"><span class="mn-icn">⌗</span>Honorar</div>
+    <div class="mn-item" data-route="invoices"><span class="mn-icn">¤</span>Fakturaer</div>
   </nav>
 </div>
 
@@ -369,6 +371,16 @@ button:disabled{opacity:.6;cursor:not-allowed}
 <aside id="drawer" class="drawer"></aside>
 
 <!-- HONORAR CALCULATOR MODAL -->
+<div id="attendeesPopup" style="display:none;position:fixed;inset:0;background:rgba(8,17,31,.82);backdrop-filter:blur(6px);z-index:200;align-items:center;justify-content:center" onclick="if(event.target===this)closeAttendeesPopup()">
+  <div style="background:var(--ink);border:1px solid var(--ink-line);border-radius:var(--radius-lg);width:480px;max-width:calc(100vw - 32px);max-height:82vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.6)">
+    <div style="padding:18px 22px;border-bottom:1px solid var(--ink-line);display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+      <div id="attendeesPopupHead"></div>
+      <button class="btn btn-text" onclick="closeAttendeesPopup()" style="font-size:18px">✕</button>
+    </div>
+    <div id="attendeesPopupBody" style="padding:18px 22px"></div>
+  </div>
+</div>
+
 <div id="honorarCalcBackdrop" style="display:none;position:fixed;inset:0;background:rgba(8,17,31,.82);backdrop-filter:blur(6px);z-index:200;align-items:center;justify-content:center">
   <div style="background:var(--ink);border:1px solid var(--ink-line);border-radius:var(--radius-lg);width:500px;max-width:calc(100vw - 32px);max-height:82vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.6)">
     <div style="padding:20px 24px;border-bottom:1px solid var(--ink-line);display:flex;justify-content:space-between;align-items:center">
@@ -396,7 +408,23 @@ const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxQlGk_6d2eGzeLwgkzZ
 
 // State
 let SESSION = null; // { email, hash, role, member }
-let CACHE = { members: null, contracts: null };
+let CACHE = { members: null, contracts: null, dashboard: null, invoices: null, _stamp: {} };
+const CACHE_TTL_MS = 45 * 1000;
+const CACHE_TTL_PER_KEY = { dashboard: 90 * 1000, invoices: 90 * 1000 };
+function cacheFresh(key){ const t = CACHE._stamp[key]; return t && (Date.now() - t) < (CACHE_TTL_PER_KEY[key] || CACHE_TTL_MS); }
+function cacheTouch(key){ CACHE._stamp[key] = Date.now(); }
+function cacheBust(key){ delete CACHE._stamp[key]; if (key in CACHE) CACHE[key] = null; }
+
+// Pre-warm common admin data lige efter login så side-skift føles hurtigere.
+// Fire-and-forget; fejl ignoreres (de viser sig når brugeren navigerer derhen).
+function prewarmAdminCaches(){
+  if (!CACHE.contracts || !cacheFresh('contracts')){
+    apiGet('getContracts').then(d => { if (d && d.ok){ CACHE.contracts = d.contracts; cacheTouch('contracts'); } }).catch(()=>{});
+  }
+  if (!CACHE.members || !cacheFresh('members')){
+    apiGet('getMembers').then(d => { if (d && d.ok){ CACHE.members = d.members; cacheTouch('members'); } }).catch(()=>{});
+  }
+}
 
 // ─── Auth helpers ──────────────────────────────────────────────────
 async function sha256hex(str){
@@ -543,6 +571,7 @@ function enterApp(){
   if (SESSION.role === 'admin'){
     document.getElementById('adminApp').style.display = 'grid';
     document.getElementById('memberApp').style.display = 'none';
+    prewarmAdminCaches();
     setAdminRoute('dashboard');
   } else {
     document.getElementById('memberApp').style.display = 'flex';
@@ -589,6 +618,7 @@ function setAdminRoute(route, params){
   if (route === 'contractEdit') return renderContractEditor(params && params.id);
   if (route === 'members') return renderMembers();
   if (route === 'honorar') return renderAdminHonorar();
+  if (route === 'invoices') return renderInvoicesList();
 }
 
 // ── Dashboard ──────────────────────────────────────────────────
@@ -604,7 +634,7 @@ async function renderDashboard(){
     <div class="grid-4" style="margin-bottom:28px" id="dashStats">
       ${[1,2,3,4].map(()=>'<div class="stat-tile"><div class="label">—</div><div class="value">—</div></div>').join('')}
     </div>
-    <div style="display:grid;grid-template-columns:1fr 320px;gap:16px;align-items:start">
+    <div style="display:grid;grid-template-columns:1fr 320px;gap:16px;align-items:start;margin-bottom:16px">
       <div class="card">
         <div style="margin-bottom:14px">
           <div class="eyebrow warm">Næste op</div>
@@ -620,10 +650,44 @@ async function renderDashboard(){
         <div id="dashArrangoere" class="muted">Henter...</div>
       </div>
     </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:14px;gap:10px;flex-wrap:wrap">
+        <div>
+          <div class="eyebrow warm">Arkiv</div>
+          <h2 class="serif" style="margin:6px 0 0;font-weight:400;font-size:24px">Seneste fakturaer</h2>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="setAdminRoute('invoices')">Se alle →</button>
+      </div>
+      <div id="dashInvoices" class="muted">Henter...</div>
+    </div>
   `;
+  // Stale-while-revalidate: hvis vi har en gammel snapshot, render den straks
+  // og hent friske data i baggrunden. Den friske data overskriver kun DOM
+  // hvis brugeren stadig er på dashboardet.
+  if (CACHE.dashboard) {
+    _paintDashboard(CACHE.dashboard);
+    if (cacheFresh('dashboard')) return;
+    // Refresh in background
+    apiGet('getDashboard').then(fresh => {
+      if (fresh && fresh.ok){
+        CACHE.dashboard = fresh; cacheTouch('dashboard');
+        if (ADMIN_ROUTE === 'dashboard' && document.getElementById('dashStats')){
+          _paintDashboard(fresh);
+        }
+      }
+    }).catch(()=>{});
+    return;
+  }
   try {
     const d = await apiGet('getDashboard');
     if (!d.ok){ toast(d.error||'Fejl','err'); return; }
+    CACHE.dashboard = d; cacheTouch('dashboard');
+    _paintDashboard(d);
+  } catch(e){ toast(e.message,'err'); }
+}
+
+function _paintDashboard(d){
+  try {
     const statsEl = document.getElementById('dashStats');
     const upcomingEl = document.getElementById('dashUpcoming');
     const arrangoereEl = document.getElementById('dashArrangoere');
@@ -639,18 +703,60 @@ async function renderDashboard(){
     } else {
       upcomingEl.innerHTML = `
         <table class="table">
-          <thead><tr><th>Dato</th><th>Spillested</th><th>Type</th><th style="text-align:right">Honorar</th><th>Status</th></tr></thead>
+          <thead><tr><th>Dato</th><th>Spillested</th><th>Type</th><th style="text-align:right">Honorar</th><th>Status</th><th>Besætning</th></tr></thead>
           <tbody>
-            ${d.upcoming.map(c => `
+            ${d.upcoming.map((c,idx) => {
+              const attCount = (c.attendees||[]).length;
+              const need = (Number(c.musicianCount)||0) + (Number(c.crewCount)||0);
+              const fillColor = need===0 ? 'var(--cream-mute)' : (attCount>=need ? 'var(--ok)' : (attCount>0 ? 'var(--amber)' : 'var(--danger)'));
+              return `
               <tr class="clickable" onclick="setAdminRoute('contractEdit',{id:'${escapeHtml(c.id)}'})">
                 <td class="mono" style="color:var(--amber)">${fmtDate(c.date)}</td>
                 <td><span class="serif" style="font-size:16px">${escapeHtml((c.venue&&c.venue.name)||'—')}</span> <span class="muted">· ${escapeHtml((c.venue&&c.venue.city)||'')}</span></td>
                 <td>${escapeHtml(c.type||'')}</td>
                 <td style="text-align:right" class="mono">${fmtMoney(c.honorar)}</td>
                 <td>${statusBadge(c.status)}</td>
-              </tr>`).join('')}
+                <td onclick="event.stopPropagation();showAttendeesPopup(${idx})" style="cursor:pointer">
+                  <span title="Vis besætning" style="display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:999px;border:1px solid var(--ink-line);background:rgba(8,17,31,.4);font-family:var(--font-mono);font-size:12px;color:${fillColor}">
+                    👥 ${attCount}${need?` / ${need}`:''}
+                  </span>
+                </td>
+              </tr>`}).join('')}
           </tbody>
         </table>`;
+    }
+    const invoicesEl = document.getElementById('dashInvoices');
+    if (invoicesEl) {
+      const inv = d.recentInvoices || [];
+      const udest = d.totalUdestaaende || 0;
+      if (!inv.length){
+        invoicesEl.innerHTML = '<div class="empty">Ingen fakturaer endnu — opret én fra en kontrakt via "↓ Faktura"-knappen.</div>';
+      } else {
+        invoicesEl.innerHTML = `
+          ${udest>0 ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding:8px 12px;background:rgba(232,168,103,.06);border:1px solid rgba(232,168,103,.2);border-radius:var(--radius)">
+            <span class="mono" style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">Udestående i alt</span>
+            <span class="mono" style="font-size:14px;color:var(--amber)">${fmtMoney(udest)}</span>
+          </div>` : ''}
+          <table class="table">
+            <thead><tr><th>Faktura nr.</th><th>Arrangør</th><th>Dato</th><th style="text-align:right">Beløb</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              ${inv.map(i => {
+                const arr = i.arrangoer || {};
+                const badge = i.status === 'betalt'
+                  ? '<span class="badge ok"><span class="badge-dot"></span>Betalt</span>'
+                  : '<span class="badge warn"><span class="badge-dot"></span>Udestående</span>';
+                return `<tr>
+                  <td class="mono" style="color:var(--amber)">${escapeHtml(i.invoiceNr)}</td>
+                  <td>${escapeHtml(arr.name||'—')}</td>
+                  <td class="mono" style="font-size:12px;color:var(--cream-mute)">${fmtDate(i.date)}</td>
+                  <td style="text-align:right" class="mono">${fmtMoney(i.amount)}</td>
+                  <td>${badge}</td>
+                  <td style="text-align:right">${i.driveUrl ? `<a href="${escapeHtml(i.driveUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="text-decoration:none">↗ Drive</a>` : ''}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>`;
+      }
     }
     if (arrangoereEl) {
       const arr = d.arrangoere || [];
@@ -674,6 +780,46 @@ async function renderDashboard(){
       }
     }
   } catch(e){ toast(e.message,'err'); }
+}
+
+function showAttendeesPopup(idx){
+  const c = (CACHE.dashboard && CACHE.dashboard.upcoming && CACHE.dashboard.upcoming[idx]);
+  if (!c) return;
+  const atts = c.attendees || [];
+  const need = (Number(c.musicianCount)||0) + (Number(c.crewCount)||0);
+  const head = document.getElementById('attendeesPopupHead');
+  const body = document.getElementById('attendeesPopupBody');
+  head.innerHTML = `
+    <div class="eyebrow warm">${escapeHtml(c.type||'')} · ${fmtDate(c.date)}</div>
+    <h3 style="font-family:var(--font-display);font-size:22px;margin:6px 0 4px;font-weight:400">${escapeHtml((c.venue&&c.venue.name)||'—')}</h3>
+    <div class="muted" style="font-size:12px">${escapeHtml((c.venue&&c.venue.city)||'')}</div>
+  `;
+  const fillColor = need===0 ? 'var(--cream-mute)' : (atts.length>=need ? 'var(--ok)' : (atts.length>0 ? 'var(--amber)' : 'var(--danger)'));
+  if (!atts.length){
+    body.innerHTML = `<div class="muted" style="text-align:center;padding:14px">Ingen besætning tilknyttet endnu.${need?` Behov: ${need} pers.`:''}</div>
+      <div style="text-align:center"><button class="btn btn-ghost btn-sm" onclick="closeAttendeesPopup();setAdminRoute('contractEdit',{id:'${escapeHtml(c.id)}'})">Rediger kontrakt →</button></div>`;
+  } else {
+    body.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding:8px 12px;background:rgba(8,17,31,.4);border-radius:var(--radius);border:1px solid var(--ink-line)">
+        <div style="font-family:var(--font-mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">Tilmeldt</div>
+        <div style="font-family:var(--font-mono);font-size:14px;color:${fillColor}">${atts.length}${need?` / ${need}`:''} pers.</div>
+      </div>
+      ${atts.map(m => `
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--ink-line-soft)">
+          <div class="avatar" style="width:32px;height:32px;font-size:12px">${initials(m.name)}</div>
+          <div style="flex:1">
+            <div style="font-size:14px;color:var(--cream)">${escapeHtml(m.name)}</div>
+            <div class="mono" style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m.category||'')}${m.instrument?' · '+escapeHtml(m.instrument):''}</div>
+          </div>
+        </div>`).join('')}
+      <div style="text-align:right;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="closeAttendeesPopup();setAdminRoute('contractEdit',{id:'${escapeHtml(c.id)}'})">Rediger →</button></div>
+    `;
+  }
+  document.getElementById('attendeesPopup').style.display = 'flex';
+}
+
+function closeAttendeesPopup(){
+  document.getElementById('attendeesPopup').style.display = 'none';
 }
 
 function statusBadge(s){
@@ -738,11 +884,15 @@ async function renderContractsList(){
   bind('contractHonorarMin',  'contractHonorarMin');
   bind('contractHonorarMax',  'contractHonorarMax');
 
+  if (CACHE.contracts && cacheFresh('contracts')) {
+    drawContractsTable();
+    return;
+  }
   try {
     const d = await apiGet('getContracts');
     if (!document.getElementById('contractsTable')) return;
     if (!d.ok){ toast(d.error,'err'); return; }
-    CACHE.contracts = d.contracts;
+    CACHE.contracts = d.contracts; cacheTouch('contracts');
     drawContractsTable();
   } catch(e){ toast(e.message,'err'); }
 }
@@ -842,8 +992,9 @@ async function renderContractEditor(id){
   const main = document.getElementById('adminMain');
   main.innerHTML = '<div class="muted">Henter kontrakt...</div>';
   // Load members for attendee picker
-  if (!CACHE.members){
-    try { const d = await apiGet('getMembers'); if (d.ok) CACHE.members = d.members; } catch(e){}
+  if (!CACHE.members || !cacheFresh('members')){
+    try { const d = await apiGet('getMembers'); if (d.ok){ CACHE.members = d.members; cacheTouch('members'); } }
+    catch(e){ toast('Kunne ikke hente medlemmer: '+(e.message||e),'err'); }
   }
   if (id === 'new'){
     EDITING = blankContract();
@@ -1165,8 +1316,21 @@ function autoDistributeHonorar(){
   drawForm(); drawPreview();
 }
 
+async function retryLoadMembers(){
+  const grid = document.getElementById('attendeesGrid');
+  if (grid) grid.innerHTML = '<div class="muted">Henter medlemmer...</div>';
+  try {
+    const d = await apiGet('getMembers');
+    if (d.ok){ CACHE.members = d.members; if (grid) grid.innerHTML = renderAttendeesPicker(); }
+    else toast(d.error||'Fejl','err');
+  } catch(e){ toast('Stadig fejl: '+(e.message||e),'err'); if (grid) grid.innerHTML = renderAttendeesPicker(); }
+}
+
 function renderAttendeesPicker(){
-  if (!CACHE.members) return '<div class="muted">Henter medlemmer...</div>';
+  if (!CACHE.members) return `<div class="muted" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <span>❌ Kunne ikke hente medlemmer.</span>
+    <button class="btn btn-ghost btn-sm" type="button" onclick="retryLoadMembers()">🔄 Prøv igen</button>
+  </div>`;
   return CACHE.members.map(m=>{
     const a = EDITING_ATTENDEES.find(x=>x.memberId===m.id);
     const on = !!a;
@@ -1497,7 +1661,7 @@ async function saveContract(){
     toast('Gemt');
     EDITING.id = d.id;
     EDITING._originalId = d.id;
-    CACHE.contracts = null;
+    cacheBust('contracts'); cacheBust('dashboard');
     setAdminRoute('contractEdit', { id: d.id });
   } catch(e){ toast(e.message,'err'); }
   finally {
@@ -1512,7 +1676,7 @@ async function deleteContract(){
     const d = await apiPost('deleteContract', { id: EDITING.id });
     if (!d.ok){ toast(d.error,'err'); return; }
     toast('Slettet');
-    CACHE.contracts = null;
+    cacheBust('contracts'); cacheBust('dashboard');
     setAdminRoute('contracts');
   } catch(e){ toast(e.message,'err'); }
 }
@@ -1547,11 +1711,12 @@ async function renderMembers(){
   document.querySelectorAll('#memberFilter button').forEach(b=>{
     b.onclick = ()=>{ ADMIN_STATE.memberFilter = b.getAttribute('data-f'); drawMembersGrid(); };
   });
+  if (CACHE.members && cacheFresh('members')) { drawMembersGrid(); return; }
   try {
     const d = await apiGet('getMembers');
     if (!document.getElementById('membersGrid')) return; // navigerede væk
     if (!d.ok){ toast(d.error,'err'); return; }
-    CACHE.members = d.members;
+    CACHE.members = d.members; cacheTouch('members');
     drawMembersGrid();
   } catch(e){ toast(e.message,'err'); }
 }
@@ -1645,7 +1810,7 @@ async function saveMember(id){
     const d = await apiPost('saveMember', { member: member });
     if (!d.ok){ toast(d.error,'err'); return; }
     toast(id ? 'Opdateret' : 'Oprettet — initial password: dmdt2026');
-    CACHE.members = null;
+    cacheBust('members'); cacheBust('dashboard');
     closeDrawer();
     renderMembers();
   } catch(e){ toast(e.message,'err'); }
@@ -1657,7 +1822,7 @@ async function deleteMember(id){
     const d = await apiPost('deleteMember', { id: id });
     if (!d.ok){ toast(d.error,'err'); return; }
     toast('Slettet');
-    CACHE.members = null;
+    cacheBust('members'); cacheBust('dashboard');
     closeDrawer();
     renderMembers();
   } catch(e){ toast(e.message,'err'); }
@@ -1760,7 +1925,10 @@ async function renderJobDetail(attId){
           <h1 class="serif">${escapeHtml((c.venue&&c.venue.name)||'—')}</h1>
           <div class="lede">${escapeHtml((c.venue&&c.venue.city)||'')} · ${fmtDate(c.date)}</div>
         </div>
-        <button class="btn btn-ghost btn-sm" onclick="downloadMemberCallsheet(MEMBER_JOB)">↓ Call sheet</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-ghost btn-sm" onclick="downloadJobCalendar(MEMBER_JOB)">📅 Tilføj til kalender</button>
+          <button class="btn btn-ghost btn-sm" onclick="downloadMemberCallsheet(MEMBER_JOB)">↓ Call sheet</button>
+        </div>
       </div>
       <div class="card" style="margin-bottom:14px">
         <div class="eyebrow warm">Tider & honorar</div>
@@ -1886,7 +2054,7 @@ function pdfPrintStyles(){
 }
 
 function openPrintWindow(title, bodyHtml){
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title><style>${pdfPrintStyles()}</style></head><body>${bodyHtml}<script>window.onload=function(){window.focus();window.print();}<\/script></head></html>`;
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title><style>${pdfPrintStyles()}</style></head><body>${bodyHtml}<script>window.onload=function(){window.focus();window.print();}<\/script></body></html>`;
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const w = window.open(url, '_blank');
@@ -1951,19 +2119,13 @@ function downloadHonorarPDF(rows, total, member, fra, til){
   openPrintWindow(`Honorar — ${escapeHtml(member.name)}`, body);
 }
 
-function downloadFakturaPDF(){
-  if (!EDITING) return;
-  const c = EDITING;
+function _buildFakturaHtml(c, fakturaNr){
   const arr = c.arrangoer || {};
-  const dateObj = c.date ? new Date(c.date) : new Date();
-  const year = dateObj.getFullYear();
-  const seq = String((c.id||'').replace(/[^0-9]/g,'') || '1').padStart(3,'0');
-  const fakturaNr = `${year}-${seq}`;
   const honorarTxt = c.honorar ? c.honorar.toLocaleString('da-DK') + ' kr.' : '—';
   const paymentTxt = c.paymentTerms === 'Andet' && c.paymentTermsOther
     ? c.paymentTermsOther
     : (c.paymentTerms || '');
-  const body = `<div class="pdf-page" style="font-family:'Inter',sans-serif;color:#2A2A2A">
+  return `<div class="pdf-page" style="font-family:'Inter',sans-serif;color:#2A2A2A">
     <div style="background:#0F213C;margin:-36px -40px 28px;padding:18px 24px;display:flex;align-items:center;justify-content:space-between;border-radius:4px 4px 0 0">
       <img src="${DMD_LOGO_B64}" alt="DMDT" style="height:56px;object-fit:contain">
       <div style="color:#fff;font-size:24px;font-weight:700;font-family:'Inter',sans-serif">Honorar afregning</div>
@@ -1997,13 +2159,135 @@ function downloadFakturaPDF(){
       Danser med Drenge Tribute · Jesper Steensbeck · Frejasvej 65 · 6840 Oksbøl · Tel: 60 24 60 60 · Email: jesper@steensbeck.dk
     </div>
   </div>`;
-  openPrintWindow(`Faktura — ${fakturaNr}`, body);
+}
+
+async function downloadFakturaPDF(){
+  if (!EDITING) return;
+  const c = EDITING;
+  if (!c.id){ toast('Gem kontrakten først','err'); return; }
+
+  // Optimistic local nr; backend re-issues definitive nr
+  const dateObj = c.date ? new Date(c.date) : new Date();
+  const year = dateObj.getFullYear();
+  const digits = (c.id||'').replace(/[^0-9]/g,'') || '1';
+  const seqLocal = digits.slice(-3).padStart(3,'0');
+  const localNr = `${year}-${seqLocal}`;
+
+  // Try archive call first to get authoritative nr
+  let invoiceNr = localNr;
+  let driveUrl = null;
+  let archived = false;
+  try {
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Faktura</title><style>${pdfPrintStyles()}</style></head><body>${_buildFakturaHtml(c, localNr)}</body></html>`;
+    const d = await apiPost('createInvoice', { contractId: c.id, html: html });
+    if (d.ok && d.invoice){
+      invoiceNr = d.invoice.invoiceNr || localNr;
+      driveUrl = d.invoice.driveUrl || null;
+      archived = true;
+      cacheBust('invoices');
+    } else if (d.error) {
+      toast('Arkiv-fejl: '+d.error,'err');
+    }
+  } catch(e){ toast('Kunne ikke arkivere: '+(e.message||e),'err'); }
+
+  // Always render and open print window with definitive nr
+  const body = _buildFakturaHtml(c, invoiceNr);
+  openPrintWindow(`Faktura — ${invoiceNr}`, body);
+  if (archived) toast(driveUrl ? `Arkiveret i Drive · ${invoiceNr}` : `Faktura ${invoiceNr} oprettet`);
 }
 
 function memberDownloadHonorar(){
   const h = window._lastHonorar;
   if (!h || !h.rows.length){ toast('Ingen data — tryk Forhåndsvis først','err'); return; }
   downloadHonorarPDF(h.rows, h.total, h.member, h.fra, h.til);
+}
+
+function _parseTimeStr(s){
+  // Accept "kl. 16.00", "16:00", "16.00", "16" — return {h,m} or null
+  if (!s) return null;
+  const m = String(s).match(/(\d{1,2})[:.\s]*(\d{2})?/);
+  if (!m) return null;
+  const h = parseInt(m[1],10), mn = m[2] ? parseInt(m[2],10) : 0;
+  if (isNaN(h) || h<0 || h>23 || mn<0 || mn>59) return null;
+  return { h, m: mn };
+}
+
+function _icsDate(d, t){
+  // Local-time format YYYYMMDDTHHmmSS (no Z = floating local time, virker på alle kalendere)
+  const pad = n => String(n).padStart(2,'0');
+  return d.getFullYear() + pad(d.getMonth()+1) + pad(d.getDate()) +
+    'T' + pad(t ? t.h : 0) + pad(t ? t.m : 0) + '00';
+}
+
+function _icsEscape(s){
+  return String(s||'').replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\r?\n/g,'\\n');
+}
+
+function downloadJobCalendar(job){
+  if (!job || !job.contract) return;
+  const c = job.contract;
+  if (!c.date){ toast('Kontrakt mangler dato','err'); return; }
+  const dateObj = new Date(c.date);
+  if (isNaN(dateObj)){ toast('Ugyldig dato','err'); return; }
+
+  // Start: getIn → fallback soundcheck → fallback showtimeFrom → fallback all-day
+  const startT = _parseTimeStr(c.getIn) || _parseTimeStr(c.soundcheck) || _parseTimeStr(c.showtimeFrom);
+  const endT   = _parseTimeStr(c.showtimeTo) || (startT ? { h: Math.min(23, startT.h + 4), m: startT.m } : null);
+
+  const venue = c.venue || {};
+  const loc = [venue.address, [venue.postnr, venue.city].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  const descParts = [
+    c.getIn        && 'Get-in: ' + c.getIn,
+    c.soundcheck   && 'Lydprøve færdig kl.: ' + c.soundcheck,
+    (c.showtimeFrom||c.showtimeTo) && 'Spilletid: ' + [c.showtimeFrom, c.showtimeTo].filter(Boolean).join('–'),
+    c.sets         && 'Sæt: ' + c.sets + ' × ' + c.setMinutes + ' min',
+    job.share      && 'Din andel: ' + fmtMoney(job.share)
+  ].filter(Boolean).join('\n');
+
+  const uid = 'dmdt-' + (job.attendanceId || c.id || Date.now()) + '@dmdt.dk';
+  const dtStamp = _icsDate(new Date(), { h: new Date().getHours(), m: new Date().getMinutes() });
+
+  let dtStart, dtEnd, allDay = false;
+  if (startT && endT){
+    dtStart = 'DTSTART:' + _icsDate(dateObj, startT);
+    dtEnd   = 'DTEND:'   + _icsDate(dateObj, endT);
+  } else {
+    // All-day fallback
+    allDay = true;
+    const next = new Date(dateObj); next.setDate(next.getDate()+1);
+    const yyyymmdd = d => d.getFullYear() + String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0');
+    dtStart = 'DTSTART;VALUE=DATE:' + yyyymmdd(dateObj);
+    dtEnd   = 'DTEND;VALUE=DATE:'   + yyyymmdd(next);
+  }
+
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//DMDT//Tribute App//DA',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    'UID:' + uid,
+    'DTSTAMP:' + dtStamp,
+    dtStart,
+    dtEnd,
+    'SUMMARY:' + _icsEscape('DMDT — ' + (venue.name||'Job')),
+    loc ? 'LOCATION:' + _icsEscape(loc) : null,
+    descParts ? 'DESCRIPTION:' + _icsEscape(descParts) : null,
+    'END:VEVENT',
+    'END:VCALENDAR'
+  ].filter(Boolean);
+
+  // CRLF per RFC 5545
+  const ics = lines.join('\r\n');
+  const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const fn = 'DMDT-' + (venue.name||'job').replace(/[^a-zA-Z0-9æøåÆØÅ-]+/g,'-') + '-' + dateObj.toISOString().slice(0,10) + '.ics';
+  const a = document.createElement('a');
+  a.href = url; a.download = fn;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=> URL.revokeObjectURL(url), 30000);
+  toast(allDay ? 'Heldagsbegivenhed tilføjet (ingen tider angivet)' : 'Kalenderfil downloadet — åbn for at tilføje');
 }
 
 function downloadMemberCallsheet(job){
@@ -2079,8 +2363,9 @@ async function renderAdminHonorar(){
     </div>
     <div id="ahResult"></div>
   `;
-  if (!CACHE.members){
-    try { const d = await apiGet('getMembers'); if(d.ok) CACHE.members = d.members; } catch(e){}
+  if (!CACHE.members || !cacheFresh('members')){
+    try { const d = await apiGet('getMembers'); if(d.ok){ CACHE.members = d.members; cacheTouch('members'); } }
+    catch(e){ toast('Kunne ikke hente medlemmer','err'); }
   }
   const sel = document.getElementById('ahMember');
   if (!sel) return;
@@ -2162,6 +2447,97 @@ async function adminVisHonorar(){
           </tfoot>
         </table>
       </div>`;
+  } catch(e){ toast(e.message,'err'); }
+}
+
+// ─── Invoice archive (Google Drive) ─────────────────────────────
+
+async function renderInvoicesList(){
+  const main = document.getElementById('adminMain');
+  main.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1 class="serif">Fakturaer</h1>
+        <div class="lede">Arkiv på Google Drive · markér betalt når penge er på kontoen.</div>
+      </div>
+    </div>
+    <div id="invoicesWrap" class="card" style="padding:0">
+      <div class="muted" style="padding:24px">Henter fakturaer…</div>
+    </div>
+  `;
+  let invoices;
+  if (CACHE.invoices && cacheFresh('invoices')){
+    invoices = CACHE.invoices;
+  } else {
+    try {
+      const d = await apiGet('getInvoices');
+      if (!d.ok){ toast(d.error||'Fejl','err'); return; }
+      invoices = d.invoices || [];
+      CACHE.invoices = invoices; cacheTouch('invoices');
+    } catch(e){ toast(e.message,'err'); return; }
+  }
+  drawInvoicesTable(invoices);
+}
+
+function drawInvoicesTable(invoices){
+  const wrap = document.getElementById('invoicesWrap');
+  if (!wrap) return;
+  if (!invoices.length){
+    wrap.innerHTML = '<div class="empty" style="padding:32px">Ingen fakturaer endnu — opret én fra en kontrakt via "↓ Faktura"-knappen.</div>';
+    return;
+  }
+  const totalUdest = invoices.filter(i => i.status === 'udestaaende').reduce((s,i)=>s+(Number(i.amount)||0),0);
+  const totalBetalt = invoices.filter(i => i.status === 'betalt').reduce((s,i)=>s+(Number(i.amount)||0),0);
+  wrap.innerHTML = `
+    <div style="display:flex;gap:14px;padding:18px 22px;border-bottom:1px solid var(--ink-line);flex-wrap:wrap">
+      <div class="stat-tile" style="flex:1;min-width:140px"><div class="label">Antal fakturaer</div><div class="value">${invoices.length}</div></div>
+      <div class="stat-tile" style="flex:1;min-width:140px"><div class="label">Udestående</div><div class="value warm">${fmtMoney(totalUdest)}</div></div>
+      <div class="stat-tile" style="flex:1;min-width:140px"><div class="label">Betalt</div><div class="value" style="color:var(--ok)">${fmtMoney(totalBetalt)}</div></div>
+    </div>
+    <table class="table">
+      <thead><tr>
+        <th>Faktura nr.</th>
+        <th>Arrangør</th>
+        <th>Dato</th>
+        <th style="text-align:right">Beløb</th>
+        <th>Status</th>
+        <th></th>
+      </tr></thead>
+      <tbody>
+        ${invoices.map(i => {
+          const arr = i.arrangoer || {};
+          const statusBadge = i.status === 'betalt'
+            ? '<span class="badge ok"><span class="badge-dot"></span>Betalt</span>'
+            : i.status === 'forsinket'
+              ? '<span class="badge" style="color:var(--danger);border-color:rgba(220,90,90,.3)"><span class="badge-dot"></span>Forsinket</span>'
+              : '<span class="badge warn"><span class="badge-dot"></span>Udestående</span>';
+          const toggle = i.status === 'betalt'
+            ? `<button class="btn btn-ghost btn-sm" onclick="setInvoiceStatus('${escapeHtml(i.id)}','udestaaende')">↺ Genåbn</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="setInvoiceStatus('${escapeHtml(i.id)}','betalt')">✓ Markér betalt</button>`;
+          return `<tr>
+            <td class="mono" style="color:var(--amber)">${escapeHtml(i.invoiceNr)}</td>
+            <td>${escapeHtml(arr.name||'—')}</td>
+            <td class="mono" style="font-size:12px;color:var(--cream-mute)">${fmtDate(i.date)}</td>
+            <td style="text-align:right" class="mono">${fmtMoney(i.amount)}</td>
+            <td>${statusBadge}</td>
+            <td style="text-align:right">
+              ${i.driveUrl ? `<a href="${escapeHtml(i.driveUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="text-decoration:none">↗ Drive</a>` : ''}
+              ${toggle}
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+async function setInvoiceStatus(id, status){
+  try {
+    const d = await apiPost('updateInvoiceStatus', { id: id, status: status });
+    if (!d.ok){ toast(d.error||'Fejl','err'); return; }
+    toast(status === 'betalt' ? 'Markeret som betalt' : 'Genåbnet');
+    cacheBust('invoices');
+    renderInvoicesList();
   } catch(e){ toast(e.message,'err'); }
 }
 
