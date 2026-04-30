@@ -108,6 +108,28 @@ a{color:inherit;text-decoration:none}
 /* ─── ADMIN SHELL ──────────────────────────── */
 .admin-shell{display:grid;grid-template-columns:240px 1fr;min-height:100vh}
 @media (max-width:900px){.admin-shell{grid-template-columns:1fr}}
+/* ── Mobile navigation ── */
+.mobile-nav{display:none}
+@media (max-width:768px){
+  .sidebar{display:none}
+  .admin-shell{display:block}
+  .main{padding:16px 16px 76px}
+  .mobile-nav{display:flex;position:fixed;bottom:0;left:0;right:0;background:var(--ink);border-top:1px solid var(--ink-line);z-index:200;height:60px}
+  .mn-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:9px;color:var(--cream-dim);cursor:pointer;padding:6px 0;gap:2px;font-family:var(--font-mono);letter-spacing:.04em;text-align:center;user-select:none;transition:color 120ms}
+  .mn-item.on{color:var(--amber)}
+  .mn-item .mn-icn{font-size:17px;line-height:1}
+  .page-head{flex-direction:column;gap:8px;margin-bottom:16px}
+  .page-head h1{font-size:24px}
+  .page-head .flex{flex-wrap:wrap;gap:6px}
+  .page-head .flex .btn{font-size:11px;padding:6px 10px}
+  .contract-preview{display:none}
+  .contract-form{max-height:none;border-right:none}
+  .contract-split{grid-template-columns:1fr}
+  .job-card{grid-template-columns:70px 1fr;gap:10px;padding:14px}
+  .attend-toggle{grid-column:1/-1;flex-direction:row;flex-wrap:wrap;gap:6px;justify-content:flex-start}
+  .grid-4{grid-template-columns:repeat(2,1fr)}
+  .row-2{grid-template-columns:1fr}
+}
 .sidebar{background:linear-gradient(180deg,var(--ink),var(--ink-deep));border-right:1px solid var(--ink-line);padding:24px 18px;display:flex;flex-direction:column}
 .sidebar-brand{display:flex;align-items:center;gap:10px;margin-bottom:32px;padding:0 6px}
 .sidebar-brand .glyph{width:32px;height:32px;border-radius:6px;background:var(--ink-soft);display:flex;align-items:center;justify-content:center;color:var(--amber);font-family:var(--font-display);font-size:18px;border:1px solid var(--ink-line-strong)}
@@ -305,6 +327,12 @@ a{color:inherit;text-decoration:none}
     </div>
   </aside>
   <main class="main" id="adminMain"></main>
+  <nav class="mobile-nav" id="adminMobileNav">
+    <div class="mn-item" data-route="dashboard"><span class="mn-icn">◐</span>Dashboard</div>
+    <div class="mn-item" data-route="contracts"><span class="mn-icn">◫</span>Kontrakter</div>
+    <div class="mn-item" data-route="members"><span class="mn-icn">◉</span>Medlemmer</div>
+    <div class="mn-item" data-route="honorar"><span class="mn-icn">⌗</span>Honorar</div>
+  </nav>
 </div>
 
 <!-- MEMBER APP -->
@@ -543,7 +571,7 @@ let ADMIN_STATE = {
 
 function setAdminRoute(route, params){
   ADMIN_ROUTE = route;
-  document.querySelectorAll('.sidebar .nav-item[data-route]').forEach(el=>{
+  document.querySelectorAll('.sidebar .nav-item[data-route], .mobile-nav .mn-item[data-route]').forEach(el=>{
     el.classList.toggle('on', el.getAttribute('data-route') === route);
   });
   if (route === 'dashboard') return renderDashboard();
@@ -895,7 +923,6 @@ function drawForm(){
       <div class="row-3">
         <div class="field"><label>Postnr</label><input class="input" data-bind="arrangoer.postnr" value="${escapeHtml(c.arrangoer.postnr)}"></div>
         <div class="field"><label>By</label><input class="input" data-bind="arrangoer.city" value="${escapeHtml(c.arrangoer.city)}"></div>
-        <div class="field"><label>CVR</label><input class="input" data-bind="arrangoer.cvr" value="${escapeHtml(c.arrangoer.cvr)}"></div>
       </div>
       <div class="row-2">
         <div class="field"><label>Email</label><input class="input" data-bind="arrangoer.email" value="${escapeHtml(c.arrangoer.email)}"></div>
@@ -1254,9 +1281,9 @@ function drawPreview(){
         ${tr('Navn', escapeHtml(c.arrangoer.name||''), 'Kontaktperson:', 'Jesper Steensbeck')}
         ${tr('Adresse', escapeHtml(c.arrangoer.address||''), 'Adresse:', 'Frejasvej 65')}
         ${tr('Postnr.', escapeHtml((c.arrangoer.postnr||'')+' '+(c.arrangoer.city||'')).trim(), 'Postnr.:', '6840, Oksbøl')}
-        ${tr('Kontaktperson tlf.', escapeHtml(c.arrangoer.phone||''), 'Mob.:', '60 24 60 60')}
-        ${tr('Mail', escapeHtml(c.arrangoer.email||''), 'Mail:', 'jesper@steensbeck.dk')}
-        ${tr('CVR', escapeHtml(c.arrangoer.cvr||''), '', '')}
+        ${tr('Kontaktperson', escapeHtml(c.arrangoer.contactName||''), 'Mob.:', '60 24 60 60')}
+        ${tr('Kontaktperson tlf.', escapeHtml(c.arrangoer.phone||''), 'Mail:', 'jesper@steensbeck.dk')}
+        ${tr('Mail', escapeHtml(c.arrangoer.email||''), '', '')}
       </table>
 
       <!-- Spillested / Bandnavn -->
@@ -1303,7 +1330,6 @@ function drawPreview(){
         <tr>
           <td colspan="2" style="padding:5px 8px;border-bottom:1px solid #D9CFBE;font-size:11px;color:#4A4A4A">
             <strong>Særlige aftaler:</strong> ${escapeHtml(c.notes||'')}
-            <div style="margin-top:4px"><strong>Besætning:</strong> ${besaetningChips}</div>
           </td>
         </tr>
       </table>
@@ -1367,44 +1393,68 @@ function drawPreview(){
 
     ${c.type === 'Festival' ? `
     <!-- ══ Side 4: Sceneplan (Festival) ══ -->
-    <div class="pdf-page">
-      <div style="text-align:center;font-size:20px;font-weight:700;color:#0F213C;margin-bottom:20px;font-family:'Inter',sans-serif">Sceneplan</div>
+    <div class="pdf-page" style="font-family:'Inter',sans-serif;color:#1A1A1A">
+      <div style="text-align:center;font-size:28px;font-weight:700;margin-bottom:16px">Sceneplan</div>
 
-      <!-- Scene bagvæg -->
-      <div style="border:2px solid #B8A88A;border-radius:4px;padding:12px;margin-bottom:8px;background:#EFE3CC">
-        <div style="text-align:center;font-size:9px;color:#8A6F4D;letter-spacing:.12em;text-transform:uppercase;margin-bottom:10px">— Bagscene (bagvæg) —</div>
-        <div style="display:flex;gap:8px;justify-content:space-between;align-items:flex-start">
-          <div style="flex:1;border:1px solid #B8A88A;border-radius:3px;padding:7px;background:#FCF7EE;font-size:10px;color:#0F213C">
-            <strong>Keys</strong><br>· Podie 2x3m<br>· Kor - Beta 58<br>· 230v
+      <!-- Bagscene: CSS grid — col1=Keys, col2=DMDT/Trommer/Bas stacked -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;column-gap:24px;row-gap:10px;margin-bottom:50px">
+
+        <!-- DMDT Stagebox — col 2, row 1, right-aligned, pulled up -->
+        <div style="grid-column:2;grid-row:1;justify-self:end;width:132px;margin-top:-28px">
+          <div style="font-size:10px;line-height:1.8;margin-bottom:4px">
+            &bull;&nbsp;230 V<br>&bull;&nbsp;CAT 5/6 kabel
           </div>
-          <div style="flex:1;border:1px solid #B8A88A;border-radius:3px;padding:7px;background:#FCF7EE;font-size:10px;color:#0F213C;font-style:italic">
-            <strong style="font-style:normal">Trommer</strong><br>· Podie 2x3m<br>· 230v
-          </div>
-          <div style="width:110px;border:1px solid #B8A88A;border-radius:3px;padding:7px;background:#FCF7EE;font-size:10px;color:#0F213C">
-            <strong>DMDT Stagebox<br>og mixer rack</strong><br>· 230V<br>· CAT 5/6 kabel
+          <div style="background:#8C97A8;padding:9px 12px;font-size:11px;line-height:1.5;font-weight:500">
+            DMDT<br>Stagebox<br>og mixer rack
           </div>
         </div>
-        <div style="display:flex;justify-content:flex-end;margin-top:6px">
-          <div style="width:110px;border:1px solid #B8A88A;border-radius:3px;padding:5px 7px;background:#FCF7EE;font-size:10px;color:#0F213C">
-            <strong>Bas stack</strong><br>· 230V
+
+        <!-- Keys — col 1, row 2, rotated -3deg (right side up), same min-height as Trommer -->
+        <div style="grid-column:1;grid-row:2;transform:rotate(-3deg);transform-origin:center">
+          <div style="background:#8C97A8;padding:18px 20px;font-size:11px;line-height:1.9;height:130px;box-sizing:border-box">
+            <div style="font-weight:700;font-size:13px;margin-bottom:10px">Keys</div>
+            &bull;&nbsp;Podie 2x3m<br>
+            &bull;&nbsp;Kor - Beta 58<br>
+            &bull;&nbsp;230v
+          </div>
+        </div>
+
+        <!-- Trommer — col 2, row 2, rotated +3deg (left side up), same min-height as Keys -->
+        <div style="grid-column:2;grid-row:2;transform:rotate(3deg);transform-origin:center">
+          <div style="background:#8C97A8;padding:18px 20px;font-size:11px;line-height:1.9;font-style:italic;height:130px;box-sizing:border-box">
+            <div style="font-weight:700;font-size:13px;margin-bottom:10px;font-style:normal">Trommer</div>
+            &bull;&nbsp;Podie 2x3m<br>
+            &bull;&nbsp;230v
+          </div>
+        </div>
+
+        <!-- Bas stack — col 2, row 3, right-aligned -->
+        <div style="grid-column:2;grid-row:3;justify-self:end;width:132px;margin-top:16px">
+          <div style="background:#8C97A8;padding:9px 12px;font-size:11px;line-height:1.7">
+            <div style="font-weight:700">Bas stack</div>
+            &bull;&nbsp;230 V
           </div>
         </div>
       </div>
 
-      <!-- Frontscene -->
-      <div style="border:2px solid #B8A88A;border-radius:4px;padding:12px;background:#EFE3CC">
-        <div style="display:flex;gap:8px;justify-content:space-between;align-items:flex-start">
-          <div style="flex:1;border:1px solid #B8A88A;border-radius:3px;padding:7px;background:#FCF7EE;font-size:10px;color:#0F213C">
-            <strong>Guitar (Helix)</strong><br>· Kor - Beta 58<br>· 230V<br><em style="color:#6A5A40">DMDT crew fremfører et multikabel der indeholder kanaler til mics, både kor og spare front voc</em>
-          </div>
-          <div style="flex:1;border:1px solid #B8A88A;border-radius:3px;padding:7px;background:#FCF7EE;font-size:10px;color:#0F213C">
-            <strong>Front voc</strong><br><em style="color:#6A5A40">Vi medbringer selv trådløs mic, men vil gerne have en spare trådet Beta 58 til rådighed</em>
-          </div>
-          <div style="flex:1;border:1px solid #B8A88A;border-radius:3px;padding:7px;background:#FCF7EE;font-size:10px;color:#0F213C">
-            <strong>Bas</strong><br>· Kor - Beta 58<br>· 230V
-          </div>
+      <!-- Frontscene: 3 musikere — Front voc rykket mod midten, Bas rykket højre -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px">
+        <div style="font-size:11px;line-height:1.7">
+          <div style="font-weight:700;font-size:12px;margin-bottom:10px">Guitar (Helix)</div>
+          <div style="width:58px;height:58px;background:#8C97A8;border-radius:50%;margin-bottom:12px"></div>
+          &bull;&nbsp;Kor - Beta 58<br>&bull;&nbsp;230 V<br>
+          <div style="margin-top:6px">DMDT crew fremfører et multikabel der indeholder kanaler til mics, både kor og spare front voc</div>
         </div>
-        <div style="text-align:center;font-size:9px;color:#8A6F4D;letter-spacing:.12em;text-transform:uppercase;margin-top:10px">— Frontscene (publikum) →</div>
+        <div style="font-size:11px;line-height:1.7;padding-left:50px">
+          <div style="font-weight:700;font-size:12px;margin-bottom:10px">Front voc</div>
+          <div style="width:58px;height:58px;background:#8C97A8;border-radius:50%;margin-bottom:12px"></div>
+          Vi medbringer selv trådløs mic, men vil gerne have en spare trådet Beta 58 til rådighed
+        </div>
+        <div style="font-size:11px;line-height:1.7;display:flex;flex-direction:column;align-items:flex-end;text-align:right">
+          <div style="font-weight:700;font-size:12px;margin-bottom:10px">Bas</div>
+          <div style="width:58px;height:58px;background:#8C97A8;border-radius:50%;margin-bottom:12px"></div>
+          &bull;&nbsp;Kor - Beta 58<br>&bull;&nbsp;230 V
+        </div>
       </div>
 
       <div class="pdf-foot">Danser med Drenge Tribute · Sceneplan · Festival · jfr. rider punkt 3 (strøm/FOH)</div>
@@ -1646,12 +1696,8 @@ function jobCardHtml(j){
       </div>
       <div class="attend-toggle" onclick="event.stopPropagation()">
         ${isConfirmed
-          ? `<span class="confirmed-pill" data-act="undo" data-att="${escapeHtml(j.attendanceId)}">✓ Bekræftet</span>`
-          : isDeclined
-            ? `<span class="badge danger"><span class="badge-dot"></span>Kan ikke</span>
-               <button class="btn btn-ghost btn-sm" data-act="confirm" data-att="${escapeHtml(j.attendanceId)}">Skift mening</button>`
-            : `<button class="btn btn-primary btn-sm" data-act="confirm" data-att="${escapeHtml(j.attendanceId)}">Jeg er med</button>
-               <button class="btn btn-danger btn-sm" data-act="decline" data-att="${escapeHtml(j.attendanceId)}">Kan ikke</button>`}
+          ? `<span class="confirmed-pill">✓ Bekræftet</span>`
+          : `<button class="btn btn-primary btn-sm" data-act="confirm" data-att="${escapeHtml(j.attendanceId)}">Jeg er med</button>`}
       </div>
     </div>`;
 }
@@ -1704,16 +1750,13 @@ async function renderJobDetail(attId){
           <div class="kv"><div class="label">Lydprøve</div><div class="value">${escapeHtml(c.soundcheck||'—')}</div></div>
           <div class="kv"><div class="label">Spilletid</div><div class="value">${escapeHtml(c.showtimeFrom||'—')}–${escapeHtml(c.showtimeTo||'—')}</div></div>
           <div class="kv"><div class="label">Din andel</div><div class="value" style="color:var(--amber)">${fmtMoney(j.share)}</div></div>
+          ${c.sets ? `<div class="kv"><div class="label">Antal sæt</div><div class="value">${c.sets} × ${c.setMinutes} min</div></div>` : ''}
         </div>
       </div>
       <div class="card" style="margin-bottom:14px">
         <div class="eyebrow warm">Adresse</div>
         <div class="serif" style="font-size:20px;margin:6px 0">${escapeHtml((c.venue&&c.venue.address)||'—')}</div>
         <div class="muted">${escapeHtml((c.venue&&c.venue.postnr)||'')} ${escapeHtml((c.venue&&c.venue.city)||'')}</div>
-        <div class="eyebrow warm" style="margin-top:18px">Besætning</div>
-        <div class="besaetning-list">
-          ${(j.besaetning||[]).map(b=>`<div class="besaet-chip"><div class="avatar av" style="width:24px;height:24px;font-size:11px">${initials(b.name)}</div>${escapeHtml(b.name)} <span class="muted" style="font-size:11px">· ${escapeHtml(b.instrument||'')}</span></div>`).join('')}
-        </div>
       </div>
       <div class="card checkin-card">
         <div class="ck-text">
@@ -1784,7 +1827,7 @@ async function loadHonorar(){
         <thead><tr><th>Dato</th><th>Spillested / Tidspunkter</th><th>Type</th><th>Status</th><th style="text-align:right">Andel</th></tr></thead>
         <tbody>
           ${d.rows.map(r=>{
-            const times = [r.getIn&&(r.getIn+' get-in'), r.soundcheck&&(r.soundcheck+' lydprøve'), (r.showtimeFrom||r.showtimeTo)&&([r.showtimeFrom,r.showtimeTo].filter(Boolean).join('–')+' show')].filter(Boolean).join(' · ');
+            const times = [r.getIn&&(r.getIn+' get-in'), r.soundcheck&&(r.soundcheck+' lydprøve'), (r.showtimeFrom||r.showtimeTo)&&([r.showtimeFrom,r.showtimeTo].filter(Boolean).join('–')+' show'), r.sets&&(r.sets+'×'+r.setMinutes+' min')].filter(Boolean).join(' · ');
             const crew = (r.besaetning||[]).join(' · ');
             return `<tr>
               <td class="mono" style="color:var(--amber);white-space:nowrap">${fmtDate(r.date)}</td>
@@ -2080,7 +2123,7 @@ document.getElementById('changePwBtn').addEventListener('click', doChangePasswor
 document.getElementById('logoutAdmin').addEventListener('click', logout);
 document.getElementById('logoutMember').addEventListener('click', logout);
 document.getElementById('drawerBackdrop').addEventListener('click', closeDrawer);
-document.querySelectorAll('.sidebar .nav-item[data-route]').forEach(item=>{
+document.querySelectorAll('.sidebar .nav-item[data-route], .mobile-nav .mn-item[data-route]').forEach(item=>{
   item.addEventListener('click', ()=> setAdminRoute(item.getAttribute('data-route')));
 });
 document.querySelectorAll('#memberApp .mode-pill button').forEach(b=>{
