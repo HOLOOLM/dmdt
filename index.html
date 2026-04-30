@@ -277,6 +277,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .toast{position:fixed;bottom:24px;right:24px;background:var(--ink-soft);border:1px solid var(--ink-line-strong);padding:12px 18px;border-radius:var(--radius);font-size:13px;z-index:200;animation:slideIn .2s ease;box-shadow:var(--shadow-card)}
 .toast.err{border-color:rgba(217,122,108,.4);color:var(--danger)}
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
 <body>
 
@@ -634,7 +635,7 @@ async function renderDashboard(){
     <div class="grid-4" style="margin-bottom:28px" id="dashStats">
       ${[1,2,3,4].map(()=>'<div class="stat-tile"><div class="label">—</div><div class="value">—</div></div>').join('')}
     </div>
-    <div style="display:grid;grid-template-columns:1fr 320px;gap:16px;align-items:start;margin-bottom:16px">
+    <div style="display:grid;grid-template-columns:1fr 320px;gap:16px;align-items:start">
       <div class="card">
         <div style="margin-bottom:14px">
           <div class="eyebrow warm">Næste op</div>
@@ -649,16 +650,6 @@ async function renderDashboard(){
         </div>
         <div id="dashArrangoere" class="muted">Henter...</div>
       </div>
-    </div>
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:14px;gap:10px;flex-wrap:wrap">
-        <div>
-          <div class="eyebrow warm">Arkiv</div>
-          <h2 class="serif" style="margin:6px 0 0;font-weight:400;font-size:24px">Seneste fakturaer</h2>
-        </div>
-        <button class="btn btn-ghost btn-sm" onclick="setAdminRoute('invoices')">Se alle →</button>
-      </div>
-      <div id="dashInvoices" class="muted">Henter...</div>
     </div>
   `;
   // Stale-while-revalidate: hvis vi har en gammel snapshot, render den straks
@@ -707,8 +698,6 @@ function _paintDashboard(d){
           <tbody>
             ${d.upcoming.map((c,idx) => {
               const attCount = (c.attendees||[]).length;
-              const need = (Number(c.musicianCount)||0) + (Number(c.crewCount)||0);
-              const fillColor = need===0 ? 'var(--cream-mute)' : (attCount>=need ? 'var(--ok)' : (attCount>0 ? 'var(--amber)' : 'var(--danger)'));
               return `
               <tr class="clickable" onclick="setAdminRoute('contractEdit',{id:'${escapeHtml(c.id)}'})">
                 <td class="mono" style="color:var(--amber)">${fmtDate(c.date)}</td>
@@ -717,46 +706,13 @@ function _paintDashboard(d){
                 <td style="text-align:right" class="mono">${fmtMoney(c.honorar)}</td>
                 <td>${statusBadge(c.status)}</td>
                 <td onclick="event.stopPropagation();showAttendeesPopup(${idx})" style="cursor:pointer">
-                  <span title="Vis besætning" style="display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:999px;border:1px solid var(--ink-line);background:rgba(8,17,31,.4);font-family:var(--font-mono);font-size:12px;color:${fillColor}">
-                    👥 ${attCount}${need?` / ${need}`:''}
+                  <span title="Vis besætning" style="display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:999px;border:1px solid var(--ink-line);background:rgba(8,17,31,.4);font-family:var(--font-mono);font-size:12px;color:var(--cream)">
+                    👥 ${attCount}
                   </span>
                 </td>
               </tr>`}).join('')}
           </tbody>
         </table>`;
-    }
-    const invoicesEl = document.getElementById('dashInvoices');
-    if (invoicesEl) {
-      const inv = d.recentInvoices || [];
-      const udest = d.totalUdestaaende || 0;
-      if (!inv.length){
-        invoicesEl.innerHTML = '<div class="empty">Ingen fakturaer endnu — opret én fra en kontrakt via "↓ Faktura"-knappen.</div>';
-      } else {
-        invoicesEl.innerHTML = `
-          ${udest>0 ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding:8px 12px;background:rgba(232,168,103,.06);border:1px solid rgba(232,168,103,.2);border-radius:var(--radius)">
-            <span class="mono" style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">Udestående i alt</span>
-            <span class="mono" style="font-size:14px;color:var(--amber)">${fmtMoney(udest)}</span>
-          </div>` : ''}
-          <table class="table">
-            <thead><tr><th>Faktura nr.</th><th>Arrangør</th><th>Dato</th><th style="text-align:right">Beløb</th><th>Status</th><th></th></tr></thead>
-            <tbody>
-              ${inv.map(i => {
-                const arr = i.arrangoer || {};
-                const badge = i.status === 'betalt'
-                  ? '<span class="badge ok"><span class="badge-dot"></span>Betalt</span>'
-                  : '<span class="badge warn"><span class="badge-dot"></span>Udestående</span>';
-                return `<tr>
-                  <td class="mono" style="color:var(--amber)">${escapeHtml(i.invoiceNr)}</td>
-                  <td>${escapeHtml(arr.name||'—')}</td>
-                  <td class="mono" style="font-size:12px;color:var(--cream-mute)">${fmtDate(i.date)}</td>
-                  <td style="text-align:right" class="mono">${fmtMoney(i.amount)}</td>
-                  <td>${badge}</td>
-                  <td style="text-align:right">${i.driveUrl ? `<a href="${escapeHtml(i.driveUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="text-decoration:none">↗ Drive</a>` : ''}</td>
-                </tr>`;
-              }).join('')}
-            </tbody>
-          </table>`;
-      }
     }
     if (arrangoereEl) {
       const arr = d.arrangoere || [];
@@ -786,7 +742,6 @@ function showAttendeesPopup(idx){
   const c = (CACHE.dashboard && CACHE.dashboard.upcoming && CACHE.dashboard.upcoming[idx]);
   if (!c) return;
   const atts = c.attendees || [];
-  const need = (Number(c.musicianCount)||0) + (Number(c.crewCount)||0);
   const head = document.getElementById('attendeesPopupHead');
   const body = document.getElementById('attendeesPopupBody');
   head.innerHTML = `
@@ -794,15 +749,14 @@ function showAttendeesPopup(idx){
     <h3 style="font-family:var(--font-display);font-size:22px;margin:6px 0 4px;font-weight:400">${escapeHtml((c.venue&&c.venue.name)||'—')}</h3>
     <div class="muted" style="font-size:12px">${escapeHtml((c.venue&&c.venue.city)||'')}</div>
   `;
-  const fillColor = need===0 ? 'var(--cream-mute)' : (atts.length>=need ? 'var(--ok)' : (atts.length>0 ? 'var(--amber)' : 'var(--danger)'));
   if (!atts.length){
-    body.innerHTML = `<div class="muted" style="text-align:center;padding:14px">Ingen besætning tilknyttet endnu.${need?` Behov: ${need} pers.`:''}</div>
+    body.innerHTML = `<div class="muted" style="text-align:center;padding:14px">Ingen besætning tilknyttet endnu.</div>
       <div style="text-align:center"><button class="btn btn-ghost btn-sm" onclick="closeAttendeesPopup();setAdminRoute('contractEdit',{id:'${escapeHtml(c.id)}'})">Rediger kontrakt →</button></div>`;
   } else {
     body.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding:8px 12px;background:rgba(8,17,31,.4);border-radius:var(--radius);border:1px solid var(--ink-line)">
         <div style="font-family:var(--font-mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">Tilmeldt</div>
-        <div style="font-family:var(--font-mono);font-size:14px;color:${fillColor}">${atts.length}${need?` / ${need}`:''} pers.</div>
+        <div style="font-family:var(--font-mono);font-size:14px;color:var(--cream)">${atts.length} pers.</div>
       </div>
       ${atts.map(m => `
         <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--ink-line-soft)">
@@ -1019,7 +973,7 @@ function blankContract(){
     venue:{ name:'', address:'', postnr:'', city:'' },
     date:'', getIn:'', soundcheck:'', showtimeFrom:'', showtimeTo:'',
     sets:2, setMinutes:45, musicianCount:5, crewCount:1, guestCount:6,
-    honorar:0, paymentTerms:'Overførsel næste hverdag', paymentTermsOther:'', notes:''
+    honorar:0, paymentTerms:'Bankoverførsel 1 hverdag efter arrangementet', paymentTermsOther:'', notes:''
   };
 }
 
@@ -1051,8 +1005,19 @@ function drawContractEditor(){
   drawPreview();
 }
 
+const PAYMENT_TERMS_OPTIONS = [
+  'Kontant efter optræden',
+  'Bankoverførsel 1 hverdag efter arrangementet',
+  'Senest 3 dage før',
+  'Andet'
+];
+
 function drawForm(){
   const c = EDITING;
+  if (c.paymentTerms && !PAYMENT_TERMS_OPTIONS.includes(c.paymentTerms)) {
+    c.paymentTermsOther = c.paymentTermsOther || c.paymentTerms;
+    c.paymentTerms = 'Andet';
+  }
   const sec = (n, title, body) => `
     <div class="form-section">
       <div class="form-section-head"><span class="form-section-num mono">${n}</span><h3 class="form-section-title">${title}</h3></div>
@@ -1134,7 +1099,7 @@ function drawForm(){
         <div class="field"><label>Total honorar (kr)</label><div style="display:flex;gap:8px"><input class="input" type="number" data-bind="honorar" value="${c.honorar}" style="flex:1"><button class="btn btn-ghost" type="button" onclick="openHonorarCalc()" title="Fordel honorar" style="padding:10px 13px;font-size:17px;flex-shrink:0">🧮</button></div></div>
         <div class="field"><label>Betalingsbetingelse</label>
           <select class="select" data-bind="paymentTerms">
-            ${['Kontant efter optræden','Bankoverførsel 1 hverdag efter arrangementet','Senest 3 dage før','Andet'].map(opt =>
+            ${PAYMENT_TERMS_OPTIONS.map(opt =>
               `<option value="${opt}"${c.paymentTerms===opt?' selected':''}>${opt}</option>`).join('')}
           </select>
         </div>
@@ -2161,39 +2126,88 @@ function _buildFakturaHtml(c, fakturaNr){
   </div>`;
 }
 
-async function downloadFakturaPDF(){
+function downloadFakturaPDF(){
   if (!EDITING) return;
   const c = EDITING;
   if (!c.id){ toast('Gem kontrakten først','err'); return; }
 
-  // Optimistic local nr; backend re-issues definitive nr
+  // ÅBN print-vinduet SYNKRONT for at bevare user-gesture (ellers blokerer browseren popup'en).
+  const w = window.open('', '_blank');
+  if (!w){ toast('Popup blokeret — tillad popups for denne side og prøv igen','err'); return; }
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Faktura</title><style>${pdfPrintStyles()}body{display:flex;align-items:center;justify-content:center;min-height:100vh}.loading{font-family:'Inter',sans-serif;color:#8A6F4D;font-size:14px}</style></head><body><div class="loading">Arkiverer faktura…</div></body></html>`);
+
+  // Lokal fallback-nr hvis backend ikke svarer
   const dateObj = c.date ? new Date(c.date) : new Date();
   const year = dateObj.getFullYear();
-  const digits = (c.id||'').replace(/[^0-9]/g,'') || '1';
-  const seqLocal = digits.slice(-3).padStart(3,'0');
-  const localNr = `${year}-${seqLocal}`;
+  const digits = String(c.id||'').replace(/[^0-9]/g,'') || '1';
+  const localNr = year + '-' + digits.slice(-3).padStart(3,'0');
 
-  // Try archive call first to get authoritative nr
-  let invoiceNr = localNr;
-  let driveUrl = null;
-  let archived = false;
-  try {
-    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Faktura</title><style>${pdfPrintStyles()}</style></head><body>${_buildFakturaHtml(c, localNr)}</body></html>`;
-    const d = await apiPost('createInvoice', { contractId: c.id, html: html });
-    if (d.ok && d.invoice){
-      invoiceNr = d.invoice.invoiceNr || localNr;
-      driveUrl = d.invoice.driveUrl || null;
-      archived = true;
+  // Hjælper der fylder vinduet med faktura + trigger print
+  const renderInto = (nr) => {
+    if (w.closed) return;
+    const body = _buildFakturaHtml(c, nr);
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Faktura — ${nr}</title><style>${pdfPrintStyles()}</style></head><body>${body}<script>window.onload=function(){window.focus();window.print();}<\/script></body></html>`;
+    w.document.open(); w.document.write(html); w.document.close();
+  };
+
+  // Generér PDF client-side ud fra samme HTML som preview — bevarer fuld styling
+  _renderFakturaPdfBase64(c, localNr).then(pdfBase64 => {
+    return apiPost('createInvoice', { contractId: c.id, pdfBase64: pdfBase64 });
+  }).then(d => {
+    if (d && d.ok && d.invoice){
+      const nr = d.invoice.invoiceNr || localNr;
       cacheBust('invoices');
-    } else if (d.error) {
-      toast('Arkiv-fejl: '+d.error,'err');
+      renderInto(nr);
+      toast(d.invoice.driveUrl ? `Arkiveret i Drive · ${nr}` : `Faktura ${nr} oprettet`);
+    } else {
+      renderInto(localNr);
+      if (d && d.error) toast('Arkiv-fejl: '+d.error+' — printet uden arkiv','err');
     }
-  } catch(e){ toast('Kunne ikke arkivere: '+(e.message||e),'err'); }
+  }).catch(e => {
+    renderInto(localNr);
+    toast('Kunne ikke arkivere: '+(e.message||e)+' — printet uden arkiv','err');
+  });
+}
 
-  // Always render and open print window with definitive nr
-  const body = _buildFakturaHtml(c, invoiceNr);
-  openPrintWindow(`Faktura — ${invoiceNr}`, body);
-  if (archived) toast(driveUrl ? `Arkiveret i Drive · ${invoiceNr}` : `Faktura ${invoiceNr} oprettet`);
+function _renderFakturaPdfBase64(c, nr){
+  if (typeof html2pdf === 'undefined') {
+    return Promise.reject(new Error('html2pdf ikke indlæst'));
+  }
+  const body = _buildFakturaHtml(c, nr);
+
+  // CSS skal i <head> for at html2canvas tager det med (style-tag inde i fragment ignoreres ofte)
+  const styleEl = document.createElement('style');
+  styleEl.setAttribute('data-faktura-pdf', '1');
+  styleEl.textContent = pdfPrintStyles();
+  document.head.appendChild(styleEl);
+
+  // Container synlig (ikke opacity:0 — html2canvas respekterer opacity), men bag siden
+  const container = document.createElement('div');
+  container.style.cssText = 'position:fixed;left:0;top:0;width:794px;background:#fff;z-index:-9999;color:#1A1A1A';
+  container.innerHTML = body;
+  document.body.appendChild(container);
+
+  const cleanup = () => {
+    if (container.parentNode) container.parentNode.removeChild(container);
+    if (styleEl.parentNode) styleEl.parentNode.removeChild(styleEl);
+  };
+
+  // Vent på fonts før snapshot — ellers kan tekst rendere som tomme bokse
+  const fontsReady = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
+
+  return fontsReady.then(() => html2pdf().set({
+    margin: [10, 10, 10, 10],
+    filename: 'faktura.pdf',
+    image: { type: 'jpeg', quality: 0.98 },
+    html2canvas: { scale: 2, useCORS: true, allowTaint: true, foreignObjectRendering: true, backgroundColor: '#ffffff', windowWidth: 794, logging: false },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+  }).from(container).outputPdf('datauristring')).then(dataUri => {
+    cleanup();
+    return dataUri.split(',')[1];
+  }).catch(err => {
+    cleanup();
+    throw err;
+  });
 }
 
 function memberDownloadHonorar(){
@@ -2497,6 +2511,7 @@ function drawInvoicesTable(invoices){
     <table class="table">
       <thead><tr>
         <th>Faktura nr.</th>
+        <th>Kontrakt</th>
         <th>Arrangør</th>
         <th>Dato</th>
         <th style="text-align:right">Beløb</th>
@@ -2506,6 +2521,7 @@ function drawInvoicesTable(invoices){
       <tbody>
         ${invoices.map(i => {
           const arr = i.arrangoer || {};
+          const venue = i.venue || {};
           const statusBadge = i.status === 'betalt'
             ? '<span class="badge ok"><span class="badge-dot"></span>Betalt</span>'
             : i.status === 'forsinket'
@@ -2514,21 +2530,40 @@ function drawInvoicesTable(invoices){
           const toggle = i.status === 'betalt'
             ? `<button class="btn btn-ghost btn-sm" onclick="setInvoiceStatus('${escapeHtml(i.id)}','udestaaende')">↺ Genåbn</button>`
             : `<button class="btn btn-primary btn-sm" onclick="setInvoiceStatus('${escapeHtml(i.id)}','betalt')">✓ Markér betalt</button>`;
+          const contractLink = i.contractId
+            ? `<button class="btn btn-text" onclick="setAdminRoute('contractEdit',{id:'${escapeHtml(i.contractId)}'})" style="padding:0;font-size:13px;text-align:left">
+                 <span class="serif" style="color:var(--cream)">${escapeHtml(venue.name||'—')}</span>
+                 <div class="mono" style="font-size:10px;color:var(--cream-mute);letter-spacing:.06em">#${escapeHtml(i.contractId)} ↗</div>
+               </button>`
+            : '<span class="muted">—</span>';
           return `<tr>
             <td class="mono" style="color:var(--amber)">${escapeHtml(i.invoiceNr)}</td>
+            <td>${contractLink}</td>
             <td>${escapeHtml(arr.name||'—')}</td>
             <td class="mono" style="font-size:12px;color:var(--cream-mute)">${fmtDate(i.date)}</td>
             <td style="text-align:right" class="mono">${fmtMoney(i.amount)}</td>
             <td>${statusBadge}</td>
-            <td style="text-align:right">
+            <td style="text-align:right;white-space:nowrap">
               ${i.driveUrl ? `<a href="${escapeHtml(i.driveUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="text-decoration:none">↗ Drive</a>` : ''}
               ${toggle}
+              <button class="btn btn-danger btn-sm" onclick="deleteInvoice('${escapeHtml(i.id)}','${escapeHtml(i.invoiceNr)}')" title="Slet faktura">🗑</button>
             </td>
           </tr>`;
         }).join('')}
       </tbody>
     </table>
   `;
+}
+
+async function deleteInvoice(id, nr){
+  if (!confirm(`Slet faktura ${nr}?\n\nDrive-filen flyttes til papirkurv og fakturanummeret frigives — næste nye faktura genbruger det første ledige nummer.`)) return;
+  try {
+    const d = await apiPost('deleteInvoice', { id: id });
+    if (!d.ok){ toast(d.error||'Fejl','err'); return; }
+    toast('Faktura slettet · Drive-fil flyttet til papirkurv');
+    cacheBust('invoices');
+    renderInvoicesList();
+  } catch(e){ toast(e.message,'err'); }
 }
 
 async function setInvoiceStatus(id, status){
