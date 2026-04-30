@@ -277,7 +277,6 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .toast{position:fixed;bottom:24px;right:24px;background:var(--ink-soft);border:1px solid var(--ink-line-strong);padding:12px 18px;border-radius:var(--radius);font-size:13px;z-index:200;animation:slideIn .2s ease;box-shadow:var(--shadow-card)}
 .toast.err{border-color:rgba(217,122,108,.4);color:var(--danger)}
 </style>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
 <body>
 
@@ -2134,7 +2133,7 @@ function downloadFakturaPDF(){
   // ÅBN print-vinduet SYNKRONT for at bevare user-gesture (ellers blokerer browseren popup'en).
   const w = window.open('', '_blank');
   if (!w){ toast('Popup blokeret — tillad popups for denne side og prøv igen','err'); return; }
-  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Faktura</title><style>${pdfPrintStyles()}body{display:flex;align-items:center;justify-content:center;min-height:100vh}.loading{font-family:'Inter',sans-serif;color:#8A6F4D;font-size:14px}</style></head><body><div class="loading">Arkiverer faktura…</div></body></html>`);
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Faktura</title><style>${pdfPrintStyles()}body{display:flex;align-items:center;justify-content:center;min-height:100vh}.loading{font-family:'Inter',sans-serif;color:#8A6F4D;font-size:14px}</style></head><body><div class="loading">Reserverer fakturanr…</div></body></html>`);
 
   // Lokal fallback-nr hvis backend ikke svarer
   const dateObj = c.date ? new Date(c.date) : new Date();
@@ -2142,7 +2141,7 @@ function downloadFakturaPDF(){
   const digits = String(c.id||'').replace(/[^0-9]/g,'') || '1';
   const localNr = year + '-' + digits.slice(-3).padStart(3,'0');
 
-  // Hjælper der fylder vinduet med faktura + trigger print
+  // Fyld vinduet med faktura + trigger print
   const renderInto = (nr) => {
     if (w.closed) return;
     const body = _buildFakturaHtml(c, nr);
@@ -2150,69 +2149,23 @@ function downloadFakturaPDF(){
     w.document.open(); w.document.write(html); w.document.close();
   };
 
-  // Generér PDF client-side ud fra samme HTML som preview — bevarer fuld styling
-  _renderFakturaPdfBase64(c, localNr).then(pdfBase64 => {
-    return apiPost('createInvoice', { contractId: c.id, pdfBase64: pdfBase64 });
-  }).then(d => {
-    if (d && d.ok && d.invoice){
-      const nr = d.invoice.invoiceNr || localNr;
-      cacheBust('invoices');
-      renderInto(nr);
-      toast(d.invoice.driveUrl ? `Arkiveret i Drive · ${nr}` : `Faktura ${nr} oprettet`);
-    } else {
+  // Reservér fakturanr + opret række i Fakturaer-fanen (uden PDF-fil — den uploades manuelt på fakturarækken)
+  apiPost('createInvoice', { contractId: c.id, reserveOnly: true })
+    .then(d => {
+      if (d && d.ok && d.invoice){
+        const nr = d.invoice.invoiceNr || localNr;
+        cacheBust('invoices');
+        renderInto(nr);
+        toast(`Faktura ${nr} oprettet — print, gem som PDF og upload den fra Fakturaer-fanen`);
+      } else {
+        renderInto(localNr);
+        if (d && d.error) toast('Kunne ikke oprette faktura-række: '+d.error,'err');
+      }
+    })
+    .catch(e => {
       renderInto(localNr);
-      if (d && d.error) toast('Arkiv-fejl: '+d.error+' — printet uden arkiv','err');
-    }
-  }).catch(e => {
-    renderInto(localNr);
-    toast('Kunne ikke arkivere: '+(e.message||e)+' — printet uden arkiv','err');
-  });
-}
-
-function _renderFakturaPdfBase64(c, nr){
-  if (typeof html2pdf === 'undefined') {
-    return Promise.reject(new Error('html2pdf ikke indlæst'));
-  }
-  const body = _buildFakturaHtml(c, nr);
-
-  return new Promise((resolve, reject) => {
-    // Render i isoleret iframe så app-CSS ikke smitter af, og html2canvas får ren styling
-    const iframe = document.createElement('iframe');
-    iframe.style.cssText = 'position:fixed;left:-10000px;top:0;width:794px;height:1200px;border:0';
-    document.body.appendChild(iframe);
-
-    const cleanup = () => { if (iframe.parentNode) iframe.parentNode.removeChild(iframe); };
-
-    const fullHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-<style>${pdfPrintStyles()}</style>
-</head><body>${body}</body></html>`;
-
-    iframe.onload = () => {
-      try {
-        const idoc = iframe.contentDocument;
-        const iwin = iframe.contentWindow;
-        const target = idoc.body;
-        const fontsReady = (idoc.fonts && idoc.fonts.ready) ? idoc.fonts.ready : Promise.resolve();
-        // Lille ekstra delay så web-fonts sikkert er paintet
-        fontsReady.then(() => new Promise(r => setTimeout(r, 150))).then(() =>
-          html2pdf().set({
-            margin: [10, 10, 10, 10],
-            filename: 'faktura.pdf',
-            image: { type: 'jpeg', quality: 0.98 },
-            html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', windowWidth: 794, width: 794, logging: false, window: iwin },
-            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
-          }).from(target).outputPdf('datauristring')
-        ).then(dataUri => {
-          cleanup();
-          resolve(dataUri.split(',')[1]);
-        }).catch(err => { cleanup(); reject(err); });
-      } catch (err) { cleanup(); reject(err); }
-    };
-
-    // srcdoc giver ren isolation uden separat fil
-    iframe.srcdoc = fullHtml;
-  });
+      toast('Kunne ikke oprette faktura-række: '+(e.message||e),'err');
+    });
 }
 
 function memberDownloadHonorar(){
@@ -2549,7 +2502,10 @@ function drawInvoicesTable(invoices){
             <td style="text-align:right" class="mono">${fmtMoney(i.amount)}</td>
             <td>${statusBadge}</td>
             <td style="text-align:right;white-space:nowrap">
-              ${i.driveUrl ? `<a href="${escapeHtml(i.driveUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="text-decoration:none">↗ Drive</a>` : ''}
+              ${i.driveUrl
+                ? `<a href="${escapeHtml(i.driveUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="text-decoration:none">↗ Drive</a>
+                   <button class="btn btn-ghost btn-sm" onclick="uploadInvoicePdf('${escapeHtml(i.id)}','${escapeHtml(i.invoiceNr)}')" title="Erstat PDF i Drive">↻ Erstat PDF</button>`
+                : `<button class="btn btn-primary btn-sm" onclick="uploadInvoicePdf('${escapeHtml(i.id)}','${escapeHtml(i.invoiceNr)}')" title="Upload PDF til Drive">↑ Upload PDF</button>`}
               ${toggle}
               <button class="btn btn-danger btn-sm" onclick="deleteInvoice('${escapeHtml(i.id)}','${escapeHtml(i.invoiceNr)}')" title="Slet faktura">🗑</button>
             </td>
@@ -2558,6 +2514,48 @@ function drawInvoicesTable(invoices){
       </tbody>
     </table>
   `;
+}
+
+function uploadInvoicePdf(invoiceId, invoiceNr){
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/pdf,.pdf';
+  input.style.display = 'none';
+  document.body.appendChild(input);
+
+  input.onchange = () => {
+    const file = input.files && input.files[0];
+    document.body.removeChild(input);
+    if (!file) return;
+    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf'){
+      toast('Vælg venligst en PDF-fil','err');
+      return;
+    }
+    if (file.size > 9 * 1024 * 1024){
+      toast('Filen er for stor (>9 MB) — Apps Script-grænse','err');
+      return;
+    }
+    toast(`Uploader ${invoiceNr}…`);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      const base64 = dataUrl.split(',')[1] || '';
+      apiPost('uploadInvoicePdf', { id: invoiceId, pdfBase64: base64 })
+        .then(d => {
+          if (d && d.ok){
+            cacheBust('invoices');
+            toast(`Faktura ${invoiceNr} uploadet til Drive`);
+            renderInvoicesList();
+          } else {
+            toast('Fejl: ' + ((d && d.error) || 'ukendt'), 'err');
+          }
+        })
+        .catch(e => toast('Upload-fejl: ' + (e.message || e), 'err'));
+    };
+    reader.onerror = () => toast('Kunne ikke læse filen','err');
+    reader.readAsDataURL(file);
+  };
+  input.click();
 }
 
 async function deleteInvoice(id, nr){
