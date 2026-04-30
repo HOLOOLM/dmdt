@@ -884,8 +884,9 @@ function drawContractEditor(){
       <div class="flex">
         <button class="btn btn-ghost" onclick="setAdminRoute('contracts')">← Tilbage</button>
         ${isNew ? '' : '<button class="btn btn-ghost" onclick="copyContract()">Kopier</button>'}
-        ${isNew ? '' : '<button class="btn btn-ghost btn-sm" onclick="downloadContractPDF()">↓ Kontrakt PDF</button>'}
-        ${isNew ? '' : '<button class="btn btn-ghost btn-sm" onclick="downloadContractOverviewPDF()">↓ Oversigt PDF</button>'}
+        ${isNew ? '' : '<button class="btn btn-ghost btn-sm" onclick="downloadContractPDF()">↓ PDF med Rider</button>'}
+        ${isNew ? '' : '<button class="btn btn-ghost btn-sm" onclick="downloadContractOverviewPDF()">↓ PDF uden Rider</button>'}
+        ${isNew ? '' : '<button class="btn btn-ghost btn-sm" onclick="downloadFakturaPDF()">↓ Faktura</button>'}
         ${isNew ? '' : '<button class="btn btn-danger btn-sm" onclick="deleteContract()">Slet</button>'}
         <button class="btn btn-primary" onclick="saveContract()">Gem</button>
       </div>
@@ -959,7 +960,7 @@ function drawForm(){
         <div class="field"><label>Get-in</label><input class="input" data-bind="getIn" value="${escapeHtml(c.getIn)}" placeholder="kl. 16.00"></div>
       </div>
       <div class="row-3">
-        <div class="field"><label>Lydprøve</label><input class="input" data-bind="soundcheck" value="${escapeHtml(c.soundcheck)}" placeholder="kl. 18.00"></div>
+        <div class="field"><label>Lydprøve færdig kl.</label><input class="input" data-bind="soundcheck" value="${escapeHtml(c.soundcheck)}" placeholder="kl. 18.00"></div>
         <div class="field"><label>Spilletid fra</label><input class="input" data-bind="showtimeFrom" value="${escapeHtml(c.showtimeFrom)}" placeholder="kl. 21.00"></div>
         <div class="field"><label>Spilletid til</label><input class="input" data-bind="showtimeTo" value="${escapeHtml(c.showtimeTo)}" placeholder="kl. 23.00"></div>
       </div>
@@ -982,7 +983,7 @@ function drawForm(){
         <div class="field"><label>Total honorar (kr)</label><div style="display:flex;gap:8px"><input class="input" type="number" data-bind="honorar" value="${c.honorar}" style="flex:1"><button class="btn btn-ghost" type="button" onclick="openHonorarCalc()" title="Fordel honorar" style="padding:10px 13px;font-size:17px;flex-shrink:0">🧮</button></div></div>
         <div class="field"><label>Betalingsbetingelse</label>
           <select class="select" data-bind="paymentTerms">
-            ${['Kontant efter optræden','Overførsel næste hverdag','Senest 3 dage før','Andet'].map(opt =>
+            ${['Kontant efter optræden','Bankoverførsel 1 hverdag efter arrangementet','Senest 3 dage før','Andet'].map(opt =>
               `<option value="${opt}"${c.paymentTerms===opt?' selected':''}>${opt}</option>`).join('')}
           </select>
         </div>
@@ -1047,22 +1048,14 @@ function drawForm(){
 }
 
 // ── Honorar calculator ─────────────────────────────────────────
-let CALC_METHOD = 'equal';
+let CALC_METHOD = 'individual';
 let CALC_INDIVIDUAL = [];
-let CALC_PCT = [];
-let CALC_PROVISION = 0;
-let CALC_CREW_RATE = 0;
+let CALC_PROVISION_PCT = 20;
 
 function openHonorarCalc(){
   if (!EDITING_ATTENDEES.length){ toast('Vælg besætning i sektion 05 først','err'); return; }
-  const total = EDITING.honorar || 0;
-  const n = EDITING_ATTENDEES.length;
   CALC_INDIVIDUAL = EDITING_ATTENDEES.map(a=>({ memberId: a.memberId, share: a.share||0 }));
-  CALC_PCT = EDITING_ATTENDEES.map(a=>({
-    memberId: a.memberId,
-    pct: total > 0 ? Math.round((a.share||0)/total*1000)/10 : Math.round(100/n*10)/10
-  }));
-  CALC_METHOD = 'equal';
+  CALC_METHOD = 'individual';
   document.getElementById('honorarCalcBackdrop').style.display = 'flex';
   drawCalc();
 }
@@ -1075,222 +1068,83 @@ function drawCalc(){
   const total = EDITING.honorar || 0;
   const n = EDITING_ATTENDEES.length;
   const memById = id => (CACHE.members||[]).find(m=>m.id===id);
-  const tab = m => m === CALC_METHOD
-    ? 'background:var(--amber);color:var(--ink-deep);font-weight:700'
-    : 'background:transparent;color:var(--cream-dim)';
 
-  let rows = '';
-  if (CALC_METHOD === 'equal') {
-    const base = n > 0 ? Math.floor(total / n) : 0;
-    const rem  = total - base * n;
-    rows = EDITING_ATTENDEES.map((a,i) => {
-      const m = memById(a.memberId);
-      const s = base + (i < rem ? 1 : 0);
-      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
-        <div><div style="font-size:13px;color:var(--cream)">${escapeHtml(m?m.name:'?')}</div>
-          <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m?m.instrument||m.category:'')}</div></div>
-        <div class="calc-row-amount" data-i="${i}" style="font-family:var(--font-mono);font-size:14px;color:var(--amber)">${s.toLocaleString('da-DK')} kr</div>
-      </div>`;
-    }).join('');
-  } else if (CALC_METHOD === 'individual') {
-    rows = CALC_INDIVIDUAL.map((ci,i) => {
-      const m = memById(ci.memberId);
-      return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
-        <div style="flex:1"><div style="font-size:13px;color:var(--cream)">${escapeHtml(m?m.name:'?')}</div>
-          <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m?m.instrument||m.category:'')}</div></div>
-        <input type="number" class="input no-spinner" style="width:120px;text-align:right" value="${ci.share||0}"
-          oninput="CALC_INDIVIDUAL[${i}].share=Number(this.value)||0;updateCalcDerived()">
-        <span style="font-family:var(--font-mono);font-size:11px;color:var(--cream-mute);width:20px">kr</span>
-      </div>`;
-    }).join('');
-    const sumInd = CALC_INDIVIDUAL.reduce((s,x)=>s+(x.share||0),0);
-    const diff = total - sumInd;
-    rows += `<div id="calcSumLine" style="margin-top:10px;font-family:var(--font-mono);font-size:11px;text-align:right;color:${Math.abs(diff)<1?'var(--ok)':'var(--danger)'}">
-      Sum: ${sumInd.toLocaleString('da-DK')} kr${Math.abs(diff)>=1?' · Diff: '+(diff>0?'+':'')+diff.toLocaleString('da-DK')+' kr':''}
+  const provKr = Math.round(total * (CALC_PROVISION_PCT||0) / 100);
+  const sumInd = CALC_INDIVIDUAL.reduce((s,x)=>s+(x.share||0),0);
+  const rest = total - provKr - sumInd;
+  const tomCount = CALC_INDIVIDUAL.filter(x => !((x.share||0) > 0)).length;
+
+  const rows = CALC_INDIVIDUAL.map((ci,i) => {
+    const m = memById(ci.memberId);
+    return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
+      <div style="flex:1"><div style="font-size:13px;color:var(--cream)">${escapeHtml(m?m.name:'?')}</div>
+        <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m?m.instrument||m.category:'')}</div></div>
+      <input type="number" class="input no-spinner" style="width:120px;text-align:right" value="${ci.share||0}"
+        oninput="CALC_INDIVIDUAL[${i}].share=Number(this.value)||0;updateCalcDerived()">
+      <span style="font-family:var(--font-mono);font-size:11px;color:var(--cream-mute);width:20px">kr</span>
     </div>`;
-  } else if (CALC_METHOD === 'pct') {
-    rows = CALC_PCT.map((cp,i) => {
-      const m = memById(cp.memberId);
-      const kr = Math.round(total * (cp.pct||0) / 100);
-      return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
-        <div style="flex:1"><div style="font-size:13px;color:var(--cream)">${escapeHtml(m?m.name:'?')}</div>
-          <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m?m.instrument||m.category:'')}</div></div>
-        <input type="number" class="input no-spinner" style="width:80px;text-align:right" step="0.1" value="${cp.pct||0}"
-          oninput="CALC_PCT[${i}].pct=Number(this.value)||0;updateCalcDerived()">
-        <span style="font-family:var(--font-mono);font-size:11px;color:var(--cream-mute);width:16px">%</span>
-        <span class="calc-row-kr" data-i="${i}" style="font-family:var(--font-mono);font-size:13px;color:var(--amber);width:90px;text-align:right">${kr.toLocaleString('da-DK')} kr</span>
-      </div>`;
-    }).join('');
-    const sumPct = CALC_PCT.reduce((s,x)=>s+(x.pct||0),0);
-    rows += `<div id="calcSumLine" style="margin-top:10px;font-family:var(--font-mono);font-size:11px;text-align:right;color:${Math.abs(sumPct-100)<0.05?'var(--ok)':'var(--danger)'}">
-      Procenter i alt: ${sumPct.toFixed(1)}%${Math.abs(sumPct-100)>=0.05?' (skal summere til 100%)':''}
-    </div>`;
-  } else {
-    // mix: Provision (fra toppen) + Crew-rate pr. crew-medlem + resten ligeligt mellem ikke-crew
-    const crewMembers = EDITING_ATTENDEES.filter(a => { const m = memById(a.memberId); return m && m.category === 'Crew'; });
-    const nonCrewMembers = EDITING_ATTENDEES.filter(a => { const m = memById(a.memberId); return !(m && m.category === 'Crew'); });
-    const crewTotal = crewMembers.length * (CALC_CREW_RATE||0);
-    const rest = total - (CALC_PROVISION||0) - crewTotal;
-    const nNon = nonCrewMembers.length;
-    const baseNon = nNon > 0 ? Math.floor(rest / nNon) : 0;
-    const remNon = nNon > 0 ? rest - baseNon * nNon : 0;
-    rows = `
-      <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
-        <div style="flex:1"><div style="font-size:13px;color:var(--cream)">Provision</div>
-          <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">Trækkes fra toppen</div></div>
-        <input type="number" class="input no-spinner" style="width:120px;text-align:right" value="${CALC_PROVISION||0}"
-          oninput="CALC_PROVISION=Number(this.value)||0;updateCalcDerived()">
-        <span style="font-family:var(--font-mono);font-size:11px;color:var(--cream-mute);width:20px">kr</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
-        <div style="flex:1"><div style="font-size:13px;color:var(--cream)">Crew (pr. person)</div>
-          <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${crewMembers.length} crew · sum <span class="calc-crew-sum">${crewTotal.toLocaleString('da-DK')}</span> kr</div></div>
-        <input type="number" class="input no-spinner" style="width:120px;text-align:right" value="${CALC_CREW_RATE||0}"
-          oninput="CALC_CREW_RATE=Number(this.value)||0;updateCalcDerived()">
-        <span style="font-family:var(--font-mono);font-size:11px;color:var(--cream-mute);width:20px">kr</span>
-      </div>
-      <div style="margin:10px 0 4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--cream-mute)">Resten fordeles ligeligt på ${nNon} ikke-crew</div>
-      ${nonCrewMembers.map((a,i) => {
-        const m = memById(a.memberId);
-        const s = nNon > 0 ? baseNon + (i < remNon ? 1 : 0) : 0;
-        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--ink-line-soft)">
-          <div><div style="font-size:13px;color:var(--cream)">${escapeHtml(m?m.name:'?')}</div>
-            <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m?m.instrument||m.category:'')}</div></div>
-          <div class="calc-mix-non-amount" data-mid="${escapeHtml(a.memberId)}" style="font-family:var(--font-mono);font-size:14px;color:var(--amber)">${s.toLocaleString('da-DK')} kr</div>
-        </div>`;
-      }).join('')}
-      ${crewMembers.length ? `<div style="margin:10px 0 4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--cream-mute)">Crew (fast rate pr. person)</div>` : ''}
-      ${crewMembers.map(a => {
-        const m = memById(a.memberId);
-        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--ink-line-soft)">
-          <div><div style="font-size:13px;color:var(--cream)">${escapeHtml(m?m.name:'?')}</div>
-            <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m?m.instrument||m.category:'')}</div></div>
-          <div class="calc-mix-crew-amount" style="font-family:var(--font-mono);font-size:14px;color:var(--amber)">${(CALC_CREW_RATE||0).toLocaleString('da-DK')} kr</div>
-        </div>`;
-      }).join('')}
-      <div id="calcSumLine" style="margin-top:10px;font-family:var(--font-mono);font-size:11px;text-align:right;color:${rest>=0?'var(--ok)':'var(--danger)'}">
-        Provision ${(CALC_PROVISION||0).toLocaleString('da-DK')} kr + Crew ${crewTotal.toLocaleString('da-DK')} kr + Rest ${rest.toLocaleString('da-DK')} kr = ${((CALC_PROVISION||0)+crewTotal+rest).toLocaleString('da-DK')} kr ${rest<0?'(overskredet)':''}
-      </div>
-    `;
-  }
+  }).join('');
 
   document.getElementById('honorarCalcBody').innerHTML = `
-    <div style="display:flex;background:rgba(8,17,31,.6);border:1px solid var(--ink-line);border-radius:var(--radius);padding:3px;margin-bottom:16px">
-      <button style="flex:1;padding:8px 6px;border:0;border-radius:var(--radius-sm);font-size:12px;font-family:var(--font-mono);cursor:pointer;letter-spacing:.06em;${tab('equal')}" onclick="CALC_METHOD='equal';drawCalc()">Ligeligt</button>
-      <button style="flex:1;padding:8px 6px;border:0;border-radius:var(--radius-sm);font-size:12px;font-family:var(--font-mono);cursor:pointer;letter-spacing:.06em;${tab('individual')}" onclick="CALC_METHOD='individual';drawCalc()">Individuelt</button>
-      <button style="flex:1;padding:8px 6px;border:0;border-radius:var(--radius-sm);font-size:12px;font-family:var(--font-mono);cursor:pointer;letter-spacing:.06em;${tab('pct')}" onclick="CALC_METHOD='pct';drawCalc()">Procent</button>
-      <button style="flex:1;padding:8px 6px;border:0;border-radius:var(--radius-sm);font-size:12px;font-family:var(--font-mono);cursor:pointer;letter-spacing:.06em;${tab('mix')}" onclick="CALC_METHOD='mix';drawCalc()">Fordel</button>
-    </div>
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;background:rgba(232,168,103,.06);border:1px solid rgba(232,168,103,.2);border-radius:var(--radius);padding:10px 12px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;background:rgba(232,168,103,.06);border:1px solid rgba(232,168,103,.2);border-radius:var(--radius);padding:10px 12px">
       <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--amber);white-space:nowrap">Total honorar</div>
       <input type="number" class="input no-spinner" id="calcTotalInput" value="${total||''}" placeholder="Indtast beløb…"
         style="flex:1;text-align:right;font-family:var(--font-mono);font-size:15px;color:var(--amber);border-color:rgba(232,168,103,.3);background:rgba(8,17,31,.4)"
         oninput="EDITING.honorar=Number(this.value)||0;const hb=document.querySelector('#cForm [data-bind=honorar]');if(hb)hb.value=EDITING.honorar;updateCalcDerived()">
       <div style="font-family:var(--font-mono);font-size:12px;color:var(--cream-mute)">kr · ${n} pers.</div>
     </div>
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
+      <div style="flex:1"><div style="font-size:13px;color:var(--cream)">Provision</div>
+        <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">Trækkes fra toppen · <span class="calc-prov-kr">${provKr.toLocaleString('da-DK')}</span> kr</div></div>
+      <input type="number" class="input no-spinner" style="width:90px;text-align:right" step="0.1" value="${CALC_PROVISION_PCT||0}"
+        oninput="CALC_PROVISION_PCT=Number(this.value)||0;updateCalcDerived()">
+      <span style="font-family:var(--font-mono);font-size:11px;color:var(--cream-mute);width:20px">%</span>
+    </div>
+    <div style="margin:10px 0 4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--cream-mute)">Mandskab</div>
     ${rows}
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;gap:10px">
+      <button class="btn btn-ghost btn-sm" type="button" onclick="distributeRest()">⟳ Fordel resten ligeligt</button>
+      <div id="calcSumLine" style="font-family:var(--font-mono);font-size:11px;text-align:right;color:${Math.abs(rest)<1?'var(--ok)':(rest<0?'var(--danger)':'var(--cream-mute)')}">
+        Sum mandskab: ${sumInd.toLocaleString('da-DK')} kr · Provision ${provKr.toLocaleString('da-DK')} kr · Rest ${rest.toLocaleString('da-DK')} kr${tomCount?` · ${tomCount} tom`:''}
+      </div>
+    </div>
   `;
+}
+
+function distributeRest(){
+  const total = EDITING.honorar || 0;
+  const provKr = Math.round(total * (CALC_PROVISION_PCT||0) / 100);
+  const fyldt = CALC_INDIVIDUAL.filter(x => (x.share||0) > 0);
+  const tomme = CALC_INDIVIDUAL.filter(x => !((x.share||0) > 0));
+  const rest = total - provKr - fyldt.reduce((s,x)=>s+(x.share||0),0);
+  if (tomme.length === 0){ toast('Ingen tomme felter at fordele til','err'); return; }
+  if (rest <= 0){ toast('Intet rest at fordele','err'); return; }
+  const base = Math.floor(rest / tomme.length);
+  const rem = rest - base * tomme.length;
+  tomme.forEach((x,i) => { x.share = base + (i < rem ? 1 : 0); });
+  drawCalc();
 }
 
 function updateCalcDerived(){
   const total = EDITING.honorar || 0;
-  const n = EDITING_ATTENDEES.length;
-  const memById = id => (CACHE.members||[]).find(m=>m.id===id);
-  if (CALC_METHOD === 'equal') {
-    const base = n > 0 ? Math.floor(total / n) : 0;
-    const rem  = total - base * n;
-    document.querySelectorAll('#honorarCalcBody .calc-row-amount').forEach(el => {
-      const i = Number(el.getAttribute('data-i'));
-      const s = base + (i < rem ? 1 : 0);
-      el.textContent = s.toLocaleString('da-DK') + ' kr';
-    });
-  } else if (CALC_METHOD === 'individual') {
-    const sumInd = CALC_INDIVIDUAL.reduce((s,x)=>s+(x.share||0),0);
-    const diff = total - sumInd;
-    const sumEl = document.getElementById('calcSumLine');
-    if (sumEl) {
-      sumEl.style.color = Math.abs(diff)<1 ? 'var(--ok)' : 'var(--danger)';
-      sumEl.textContent = 'Sum: ' + sumInd.toLocaleString('da-DK') + ' kr' +
-        (Math.abs(diff)>=1 ? ' · Diff: ' + (diff>0?'+':'') + diff.toLocaleString('da-DK') + ' kr' : '');
-    }
-  } else if (CALC_METHOD === 'pct') {
-    document.querySelectorAll('#honorarCalcBody .calc-row-kr').forEach(el => {
-      const i = Number(el.getAttribute('data-i'));
-      const cp = CALC_PCT[i];
-      const kr = Math.round(total * ((cp && cp.pct)||0) / 100);
-      el.textContent = kr.toLocaleString('da-DK') + ' kr';
-    });
-    const sumPct = CALC_PCT.reduce((s,x)=>s+(x.pct||0),0);
-    const sumEl = document.getElementById('calcSumLine');
-    if (sumEl) {
-      sumEl.style.color = Math.abs(sumPct-100)<0.05 ? 'var(--ok)' : 'var(--danger)';
-      sumEl.textContent = 'Procenter i alt: ' + sumPct.toFixed(1) + '%' +
-        (Math.abs(sumPct-100)>=0.05 ? ' (skal summere til 100%)' : '');
-    }
-  } else {
-    // mix
-    const crewMembers = EDITING_ATTENDEES.filter(a => { const m = memById(a.memberId); return m && m.category === 'Crew'; });
-    const nonCrewMembers = EDITING_ATTENDEES.filter(a => { const m = memById(a.memberId); return !(m && m.category === 'Crew'); });
-    const crewTotal = crewMembers.length * (CALC_CREW_RATE||0);
-    const rest = total - (CALC_PROVISION||0) - crewTotal;
-    const nNon = nonCrewMembers.length;
-    const baseNon = nNon > 0 ? Math.floor(rest / nNon) : 0;
-    const remNon = nNon > 0 ? rest - baseNon * nNon : 0;
-    const crewSumEl = document.querySelector('#honorarCalcBody .calc-crew-sum');
-    if (crewSumEl) crewSumEl.textContent = crewTotal.toLocaleString('da-DK');
-    document.querySelectorAll('#honorarCalcBody .calc-mix-crew-amount').forEach(el => {
-      el.textContent = (CALC_CREW_RATE||0).toLocaleString('da-DK') + ' kr';
-    });
-    const nonEls = document.querySelectorAll('#honorarCalcBody .calc-mix-non-amount');
-    nonEls.forEach((el, i) => {
-      const s = nNon > 0 ? baseNon + (i < remNon ? 1 : 0) : 0;
-      el.textContent = s.toLocaleString('da-DK') + ' kr';
-    });
-    const sumEl = document.getElementById('calcSumLine');
-    if (sumEl) {
-      sumEl.style.color = rest >= 0 ? 'var(--ok)' : 'var(--danger)';
-      sumEl.textContent = 'Provision ' + (CALC_PROVISION||0).toLocaleString('da-DK') + ' kr + Crew ' + crewTotal.toLocaleString('da-DK') + ' kr + Rest ' + rest.toLocaleString('da-DK') + ' kr = ' + ((CALC_PROVISION||0)+crewTotal+rest).toLocaleString('da-DK') + ' kr' + (rest<0 ? ' (overskredet)' : '');
-    }
+  const provKr = Math.round(total * (CALC_PROVISION_PCT||0) / 100);
+  const sumInd = CALC_INDIVIDUAL.reduce((s,x)=>s+(x.share||0),0);
+  const rest = total - provKr - sumInd;
+  const tomCount = CALC_INDIVIDUAL.filter(x => !((x.share||0) > 0)).length;
+  const provEl = document.querySelector('#honorarCalcBody .calc-prov-kr');
+  if (provEl) provEl.textContent = provKr.toLocaleString('da-DK');
+  const sumEl = document.getElementById('calcSumLine');
+  if (sumEl) {
+    sumEl.style.color = Math.abs(rest)<1 ? 'var(--ok)' : (rest<0 ? 'var(--danger)' : 'var(--cream-mute)');
+    sumEl.textContent = 'Sum mandskab: ' + sumInd.toLocaleString('da-DK') + ' kr · Provision ' + provKr.toLocaleString('da-DK') + ' kr · Rest ' + rest.toLocaleString('da-DK') + ' kr' + (tomCount?` · ${tomCount} tom`:'');
   }
 }
 
 function applyHonorarCalc(){
-  const total = EDITING.honorar || 0;
-  const n = EDITING_ATTENDEES.length;
-  if (CALC_METHOD === 'equal') {
-    const base = n > 0 ? Math.floor(total / n) : 0;
-    const rem  = total - base * n;
-    EDITING_ATTENDEES.forEach((a,i) => { a.share = base + (i < rem ? 1 : 0); });
-  } else if (CALC_METHOD === 'individual') {
-    EDITING_ATTENDEES.forEach(a => {
-      const ci = CALC_INDIVIDUAL.find(x=>x.memberId===a.memberId);
-      if (ci) a.share = ci.share || 0;
-    });
-  } else if (CALC_METHOD === 'pct') {
-    EDITING_ATTENDEES.forEach(a => {
-      const cp = CALC_PCT.find(x=>x.memberId===a.memberId);
-      if (cp) a.share = Math.round(total * (cp.pct||0) / 100);
-    });
-  } else {
-    // mix: provision deducted, crew gets fixed rate, rest split equally among non-crew
-    const memById = id => (CACHE.members||[]).find(m=>m.id===id);
-    const crewIds = new Set(EDITING_ATTENDEES.filter(a => { const m = memById(a.memberId); return m && m.category === 'Crew'; }).map(a => a.memberId));
-    const nonCrewIds = EDITING_ATTENDEES.map(a => a.memberId).filter(id => !crewIds.has(id));
-    const crewTotal = crewIds.size * (CALC_CREW_RATE||0);
-    const rest = total - (CALC_PROVISION||0) - crewTotal;
-    const nNon = nonCrewIds.length;
-    const baseNon = nNon > 0 ? Math.floor(rest / nNon) : 0;
-    const remNon = nNon > 0 ? rest - baseNon * nNon : 0;
-    let nonIdx = 0;
-    EDITING_ATTENDEES.forEach(a => {
-      if (crewIds.has(a.memberId)) {
-        a.share = CALC_CREW_RATE || 0;
-      } else {
-        a.share = nNon > 0 ? baseNon + (nonIdx < remNon ? 1 : 0) : 0;
-        nonIdx++;
-      }
-    });
-  }
+  EDITING_ATTENDEES.forEach(a => {
+    const ci = CALC_INDIVIDUAL.find(x=>x.memberId===a.memberId);
+    if (ci) a.share = ci.share || 0;
+  });
   closeHonorarCalc();
   drawForm(); drawPreview();
   toast('Honorar fordelt');
@@ -1416,9 +1270,9 @@ function drawPreview(){
       <!-- Header -->
       <div style="background:#0F213C;margin:-36px -40px 0;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;border-radius:4px 4px 0 0">
         <img src="${DMD_LOGO_B64}" alt="Danser med Drenge Tribute" style="height:48px;object-fit:contain">
-        <div style="color:#fff;font-size:26px;font-weight:700;font-family:'Inter',sans-serif;letter-spacing:.02em">kontrakt</div>
+        <div style="color:#fff;font-size:26px;font-weight:700;font-family:'Inter',sans-serif;letter-spacing:.02em">${escapeHtml(c.venue.name||'Kontrakt')}</div>
         <div style="text-align:right;color:rgba(255,255,255,.65);font-size:10px;font-family:'JetBrains Mono',monospace;line-height:1.4">
-          Nr. <strong style="color:#fff;font-size:12px">${escapeHtml(c.id||'—')}</strong>
+          Kontrakt nr. <strong style="color:#fff;font-size:12px">${escapeHtml(c.id||'—')}</strong>
         </div>
       </div>
 
@@ -1468,7 +1322,7 @@ function drawPreview(){
         </tr>
         <tr>
           <td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px;color:#4A4A4A">
-            <span style="color:#8A6F4D">Lydprøve kl.</span> ${escapeHtml(c.soundcheck||'')}
+            <span style="color:#8A6F4D">Lydprøve færdig kl.</span> ${escapeHtml(c.soundcheck||'')}
           </td>
           <td style="padding:4px 8px;border-bottom:1px solid #D9CFBE;font-size:11px;font-weight:700;color:#0F213C">
             Honorar kr. ${c.honorar ? c.honorar.toLocaleString('da-DK') : '—'}
@@ -1485,7 +1339,7 @@ function drawPreview(){
       <div style="padding:8px;border-bottom:2px solid #B8A88A;font-size:11px;color:#2A2A2A">
         <div style="margin-bottom:4px">Betalings betingelser: <strong>${escapeHtml(c.paymentTerms||'')}${c.paymentTerms==='Andet'&&c.paymentTermsOther ? ' — '+escapeHtml(c.paymentTermsOther) : ''}</strong></div>
         <div style="display:flex;gap:24px">
-          <div>Reg/Kontonr: <u>9682</u> / <u>1465171</u><br>Beløbet indberettes på cpr. <u>200773-2921</u></div>
+          <div>Reg/Kontonr: <u>9682</u> / <u>1465171</u><br>Oplysninger til skat udleveres på dagen.</div>
           <div><strong>Kontohaver:</strong><br>Peter Bang-Rønne, Idrætsvænget 19, 6855 Outrup</div>
         </div>
       </div>
@@ -1847,7 +1701,7 @@ async function renderMyJobs(){
       <div class="page-head">
         <div>
           <h1 class="serif">Du er booket på ${jobs.length} koncert${jobs.length===1?'':'er'}.</h1>
-          <div class="lede">Bekræft fremmøde i god tid — og tjek ind på dagen.</div>
+          <div class="lede">Gi´ gas — nyd jobbet</div>
         </div>
       </div>
       ${jobs.length === 0 ? '<div class="card"><div class="empty">Ingen jobs endnu.</div></div>' : jobs.map(j => jobCardHtml(j)).join('')}
@@ -2063,16 +1917,14 @@ function downloadContractOverviewPDF(){
 function downloadHonorarPDF(rows, total, member, fra, til){
   const logoUrl = DMD_LOGO_B64;
   const rowsHtml = rows.map(r=>{
-    const times = [r.getIn&&(r.getIn+' get-in'), r.soundcheck&&(r.soundcheck+' lydprøve'), (r.showtimeFrom||r.showtimeTo)&&([r.showtimeFrom,r.showtimeTo].filter(Boolean).join('–'))].filter(Boolean).join(' · ');
-    const crew = (r.besaetning||[]).join(', ');
+    const venue = r.venue || {};
+    const adresse = [venue.address, [venue.postnr, venue.city].filter(Boolean).join(' ')].filter(Boolean).join(', ');
     return `<tr>
       <td style="padding:7px 10px;border-bottom:1px solid #E5DAC4;font-family:'JetBrains Mono',monospace;color:#8A6F4D;white-space:nowrap">${fmtDate(r.date)}</td>
       <td style="padding:7px 10px;border-bottom:1px solid #E5DAC4">
-        <span style="font-family:'Instrument Serif',serif;font-size:15px">${escapeHtml((r.venue&&r.venue.name)||'—')}</span>
-        ${times?`<div style="font-size:10px;color:#8A6F4D;margin-top:2px">${escapeHtml(times)}</div>`:''}
-        ${crew?`<div style="font-size:10px;color:#8A6F4D">${escapeHtml(crew)}</div>`:''}
+        <span style="font-family:'Instrument Serif',serif;font-size:15px">${escapeHtml(venue.name||'—')}</span>
       </td>
-      <td style="padding:7px 10px;border-bottom:1px solid #E5DAC4">${escapeHtml(r.type||'')}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid #E5DAC4;font-size:11px;color:#4A4A4A">${escapeHtml(adresse)}</td>
       <td style="padding:7px 10px;border-bottom:1px solid #E5DAC4;text-align:right;font-family:'JetBrains Mono',monospace">${fmtMoney(r.share)}</td>
     </tr>`;}).join('');
   const body = `<style>table{width:100%;border-collapse:collapse}
@@ -2086,10 +1938,10 @@ function downloadHonorarPDF(rows, total, member, fra, til){
     </div>
     <div class="pdf-eyebrow" style="margin-bottom:4px">Honoraroversigt</div>
     <div class="pdf-big" style="font-size:26px;margin-bottom:4px">${escapeHtml(member.name)}</div>
-    <div class="pdf-text" style="color:#8A6F4D;margin-bottom:16px">Periode: ${fmtDate(fra)} – ${fmtDate(til)}<br>Reg/konto: ${escapeHtml(member.regAccount||'—')} &nbsp;·&nbsp; CPR: ${escapeHtml(member.cpr||'—')}</div>
+    <div class="pdf-text" style="color:#8A6F4D;margin-bottom:16px">Periode: ${fmtDate(fra)} – ${fmtDate(til)}</div>
     <div class="pdf-divider"></div>
     <table>
-      <thead><tr><th>Dato</th><th>Spillested / Tidspunkter / Besætning</th><th>Type</th><th style="text-align:right">Andel</th></tr></thead>
+      <thead><tr><th>Spilledato</th><th>Jobtitel</th><th>Adresse</th><th style="text-align:right">Hyre</th></tr></thead>
       <tbody>${rowsHtml}
         <tr class="total-row"><td colspan="3" style="text-align:right;padding:8px 10px">TOTAL</td><td style="text-align:right;padding:8px 10px">${fmtMoney(total)}</td></tr>
       </tbody>
@@ -2097,6 +1949,55 @@ function downloadHonorarPDF(rows, total, member, fra, til){
     <div class="pdf-foot">Danser med Drenge Tribute · Udskrevet ${new Date().toLocaleDateString('da-DK')} · Til brug ved årsregnskab</div>
   </div>`;
   openPrintWindow(`Honorar — ${escapeHtml(member.name)}`, body);
+}
+
+function downloadFakturaPDF(){
+  if (!EDITING) return;
+  const c = EDITING;
+  const arr = c.arrangoer || {};
+  const dateObj = c.date ? new Date(c.date) : new Date();
+  const year = dateObj.getFullYear();
+  const seq = String((c.id||'').replace(/[^0-9]/g,'') || '1').padStart(3,'0');
+  const fakturaNr = `${year}-${seq}`;
+  const honorarTxt = c.honorar ? c.honorar.toLocaleString('da-DK') + ' kr.' : '—';
+  const paymentTxt = c.paymentTerms === 'Andet' && c.paymentTermsOther
+    ? c.paymentTermsOther
+    : (c.paymentTerms || '');
+  const body = `<div class="pdf-page" style="font-family:'Inter',sans-serif;color:#2A2A2A">
+    <div style="background:#0F213C;margin:-36px -40px 28px;padding:18px 24px;display:flex;align-items:center;justify-content:space-between;border-radius:4px 4px 0 0">
+      <img src="${DMD_LOGO_B64}" alt="DMDT" style="height:56px;object-fit:contain">
+      <div style="color:#fff;font-size:24px;font-weight:700;font-family:'Inter',sans-serif">Honorar afregning</div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
+      <tr>
+        <td style="vertical-align:top;font-size:12px;line-height:1.6;color:#2A2A2A;width:55%">
+          ${escapeHtml(arr.name||'')}<br>
+          ${escapeHtml(arr.address||'')}<br>
+          ${escapeHtml([arr.postnr, arr.city].filter(Boolean).join(' '))}
+        </td>
+        <td style="vertical-align:top;font-size:12px;line-height:1.7;color:#2A2A2A;text-align:left">
+          Fakturanr.<span style="color:#8A6F4D">.........................................</span> <strong>${escapeHtml(fakturaNr)}</strong><br>
+          Fakturadato<span style="color:#8A6F4D">........................</span> ${escapeHtml(fmtDate(c.date))}
+        </td>
+      </tr>
+    </table>
+    <div style="border-top:1px solid #B8A88A;border-bottom:1px solid #B8A88A;padding:14px 0;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;font-size:13px">
+      <div>Honorarafregning for arrangement d. <strong>${escapeHtml(fmtDate(c.date))}</strong></div>
+      <div style="font-weight:700;color:#0F213C;font-size:15px">${honorarTxt}</div>
+    </div>
+    <div style="min-height:280px"></div>
+    <div style="border-top:1px solid #B8A88A;padding-top:12px;font-size:11px;line-height:1.7;color:#2A2A2A">
+      Betalingsbetingelser: <strong>${escapeHtml(paymentTxt)}</strong><br>
+      Beløbet indbetales til vores bank Sparekassen for Nr. Nebel og Omegn<br>
+      Reg: 9682&nbsp;&nbsp;Kto: 0001465171<br>
+      Fakturanr. <strong>${escapeHtml(fakturaNr)}</strong> bedes anført ved overførsel<br>
+      Beløbet indberettes på Cpr. 200773-2921
+    </div>
+    <div class="pdf-foot" style="margin-top:24px;border-top:1px solid #D9CFBE;padding-top:10px">
+      Danser med Drenge Tribute · Jesper Steensbeck · Frejasvej 65 · 6840 Oksbøl · Tel: 60 24 60 60 · Email: jesper@steensbeck.dk
+    </div>
+  </div>`;
+  openPrintWindow(`Faktura — ${fakturaNr}`, body);
 }
 
 function memberDownloadHonorar(){
@@ -2146,11 +2047,6 @@ function downloadMemberCallsheet(job){
     <div class="pdf-divider"></div>
     <div class="pdf-eyebrow" style="margin-bottom:6px">Besætning</div>
     ${besaetningHtml || '<div style="color:#8A6F4D;font-size:12px">Ingen registreret endnu</div>'}
-    <div class="pdf-divider" style="margin-top:12px"></div>
-    <div class="pdf-eyebrow" style="margin-bottom:6px">Rider — ${escapeHtml(c.type||'')}</div>
-    <ol style="padding-left:16px;line-height:1.7;color:#2A2A2A;font-size:11px">
-      ${rider.map(item=>`<li style="margin-bottom:4px">${escapeHtml(item)}</li>`).join('')}
-    </ol>
     <div class="pdf-foot">Danser med Drenge Tribute · Udskrevet ${new Date().toLocaleDateString('da-DK')}</div>
   </div>`;
   openPrintWindow(`Call Sheet — ${escapeHtml(venue.name||'DMDT')}`, body);
@@ -2234,9 +2130,10 @@ async function adminVisHonorar(){
             <th>Type</th>
             <th style="text-align:right">Andel</th>
             <th>Status</th>
+            <th></th>
           </tr></thead>
           <tbody>
-            ${d.rows.map(r => {
+            ${d.rows.map((r,idx) => {
               const venue = r.venue || {};
               const times = [r.getIn&&(r.getIn+' get-in'), r.soundcheck&&(r.soundcheck+' lydprøve'), (r.showtimeFrom||r.showtimeTo)&&([r.showtimeFrom,r.showtimeTo].filter(Boolean).join('–'))].filter(Boolean).join(' · ');
               const crew = (r.besaetning||[]).join(', ');
@@ -2251,6 +2148,7 @@ async function adminVisHonorar(){
                 <td>${escapeHtml(r.type||'')}</td>
                 <td style="text-align:right" class="mono">${fmtMoney(r.share)}</td>
                 <td>${statusBadge(r.status)}</td>
+                <td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="adminDownloadHonorarRow(${idx})">↓ PDF</button></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -2258,6 +2156,7 @@ async function adminVisHonorar(){
             <tr style="border-top:2px solid var(--ink-line)">
               <td colspan="3" style="padding:12px;font-family:var(--font-mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--cream-mute)">Total</td>
               <td style="padding:12px;text-align:right;font-family:var(--font-mono);font-size:16px;color:var(--amber)">${fmtMoney(d.total)}</td>
+              <td></td>
               <td></td>
             </tr>
           </tfoot>
@@ -2270,6 +2169,13 @@ async function adminDownloadHonorar(){
   const h = window._lastAdminHonorar;
   if (!h || !h.rows.length){ toast('Tryk "Vis oversigt" først','err'); return; }
   downloadHonorarPDF(h.rows, h.total, h.member, h.fra, h.til);
+}
+
+function adminDownloadHonorarRow(idx){
+  const h = window._lastAdminHonorar;
+  if (!h || !h.rows[idx]) return;
+  const row = h.rows[idx];
+  downloadHonorarPDF([row], row.share||0, h.member, row.date, row.date);
 }
 
 // ─── Wire up ──────────────────────────────────────────────────────
