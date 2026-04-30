@@ -55,6 +55,16 @@ a{color:inherit;text-decoration:none}
 .field{display:flex;flex-direction:column;gap:6px}
 .field label{font-family:var(--font-mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--cream-mute)}
 .input,.textarea,.select{background:rgba(8,17,31,.6);border:1px solid var(--ink-line);border-radius:var(--radius);padding:10px 12px;color:var(--cream);font-size:14px;outline:none;transition:border-color 140ms;width:100%}
+.input[type=number]{-moz-appearance:textfield}
+.input[type=number]::-webkit-inner-spin-button,
+.input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.member-pill-row{display:flex;flex-wrap:wrap;gap:14px 18px;align-items:flex-start}
+.member-pill{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:64px;text-align:center}
+.member-pill .avatar{width:42px;height:42px;border-radius:50%;background:var(--ink);border:1px solid var(--ink-line);display:flex;align-items:center;justify-content:center;color:var(--amber);font-family:var(--font-mono);font-size:13px;letter-spacing:.04em}
+.count-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(232,168,103,.1);border:1px solid rgba(232,168,103,.25);color:var(--amber);font-family:var(--font-mono);font-size:11px;letter-spacing:.08em;padding:3px 10px;border-radius:99px;text-transform:uppercase}
+.spinner{display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin 700ms linear infinite;vertical-align:-2px;margin-right:4px}
+@keyframes spin{to{transform:rotate(360deg)}}
+button:disabled{opacity:.6;cursor:not-allowed}
 .input:focus,.textarea:focus,.select:focus{border-color:var(--amber)}
 .textarea{min-height:70px;resize:vertical;font-family:inherit}
 
@@ -844,6 +854,7 @@ async function renderContractEditor(id){
       const d = await apiGet('getContract', { id: id });
       if (!d.ok){ toast(d.error,'err'); setAdminRoute('contracts'); return; }
       EDITING = d.contract;
+      EDITING._originalId = d.contract.id;
       EDITING_ATTENDEES = (d.attendees || []).map(a => ({ memberId: a.memberId, share: Number(a.share)||0 }));
       drawContractEditor();
     } catch(e){ toast(e.message,'err'); }
@@ -857,7 +868,7 @@ function blankContract(){
     venue:{ name:'', address:'', postnr:'', city:'' },
     date:'', getIn:'', soundcheck:'', showtimeFrom:'', showtimeTo:'',
     sets:2, setMinutes:45, musicianCount:5, crewCount:1, guestCount:6,
-    honorar:0, paymentTerms:'Bankoverførsel hverdag efter', paymentTermsOther:'', notes:''
+    honorar:0, paymentTerms:'Overførsel næste hverdag', paymentTermsOther:'', notes:''
   };
 }
 
@@ -911,7 +922,12 @@ function drawForm(){
             <option value="godkendt"${c.status==='godkendt'?' selected':''}>Godkendt</option>
           </select>
         </div>
-        <div class="field"><label>Kontrakt-nr</label><input class="input" data-bind="id" value="${escapeHtml(c.id)}" placeholder="fx DMDT-2026-001"></div>
+        <div class="field"><label>Kontrakt-nr</label>
+          <div style="display:flex;gap:6px">
+            <input class="input" id="contractIdInput" data-bind="id" value="${escapeHtml(c.id)}" placeholder="fx DMDT-2026-001"${c.id ? ' readonly' : ''} style="flex:1${c.id ? ';opacity:.7;cursor:default' : ''}">
+            ${c.id ? '<button type="button" class="btn btn-ghost btn-sm" onclick="toggleContractIdEdit()" title="Rediger kontraktnummer" style="padding:0 12px">✎</button>' : ''}
+          </div>
+        </div>
       </div>
     `) +
     sec('02', 'Arrangør', `
@@ -966,7 +982,7 @@ function drawForm(){
         <div class="field"><label>Total honorar (kr)</label><div style="display:flex;gap:8px"><input class="input" type="number" data-bind="honorar" value="${c.honorar}" style="flex:1"><button class="btn btn-ghost" type="button" onclick="openHonorarCalc()" title="Fordel honorar" style="padding:10px 13px;font-size:17px;flex-shrink:0">🧮</button></div></div>
         <div class="field"><label>Betalingsbetingelse</label>
           <select class="select" data-bind="paymentTerms">
-            ${['Kontant efter optræden','Bankoverførsel hverdag efter','Senest 3 dage før','Andet'].map(opt =>
+            ${['Kontant efter optræden','Overførsel næste hverdag','Senest 3 dage før','Andet'].map(opt =>
               `<option value="${opt}"${c.paymentTerms===opt?' selected':''}>${opt}</option>`).join('')}
           </select>
         </div>
@@ -1034,6 +1050,8 @@ function drawForm(){
 let CALC_METHOD = 'equal';
 let CALC_INDIVIDUAL = [];
 let CALC_PCT = [];
+let CALC_PROVISION = 0;
+let CALC_CREW_RATE = 0;
 
 function openHonorarCalc(){
   if (!EDITING_ATTENDEES.length){ toast('Vælg besætning i sektion 05 først','err'); return; }
@@ -1071,7 +1089,7 @@ function drawCalc(){
       return `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
         <div><div style="font-size:13px;color:var(--cream)">${escapeHtml(m?m.name:'?')}</div>
           <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m?m.instrument||m.category:'')}</div></div>
-        <div style="font-family:var(--font-mono);font-size:14px;color:var(--amber)">${s.toLocaleString('da-DK')} kr</div>
+        <div class="calc-row-amount" data-i="${i}" style="font-family:var(--font-mono);font-size:14px;color:var(--amber)">${s.toLocaleString('da-DK')} kr</div>
       </div>`;
     }).join('');
   } else if (CALC_METHOD === 'individual') {
@@ -1080,33 +1098,80 @@ function drawCalc(){
       return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
         <div style="flex:1"><div style="font-size:13px;color:var(--cream)">${escapeHtml(m?m.name:'?')}</div>
           <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m?m.instrument||m.category:'')}</div></div>
-        <input type="number" class="input" style="width:120px;text-align:right" value="${ci.share||0}"
-          oninput="CALC_INDIVIDUAL[${i}].share=Number(this.value)||0;drawCalc()">
+        <input type="number" class="input no-spinner" style="width:120px;text-align:right" value="${ci.share||0}"
+          oninput="CALC_INDIVIDUAL[${i}].share=Number(this.value)||0;updateCalcDerived()">
         <span style="font-family:var(--font-mono);font-size:11px;color:var(--cream-mute);width:20px">kr</span>
       </div>`;
     }).join('');
     const sumInd = CALC_INDIVIDUAL.reduce((s,x)=>s+(x.share||0),0);
     const diff = total - sumInd;
-    rows += `<div style="margin-top:10px;font-family:var(--font-mono);font-size:11px;text-align:right;color:${Math.abs(diff)<1?'var(--ok)':'var(--danger)'}">
+    rows += `<div id="calcSumLine" style="margin-top:10px;font-family:var(--font-mono);font-size:11px;text-align:right;color:${Math.abs(diff)<1?'var(--ok)':'var(--danger)'}">
       Sum: ${sumInd.toLocaleString('da-DK')} kr${Math.abs(diff)>=1?' · Diff: '+(diff>0?'+':'')+diff.toLocaleString('da-DK')+' kr':''}
     </div>`;
-  } else {
+  } else if (CALC_METHOD === 'pct') {
     rows = CALC_PCT.map((cp,i) => {
       const m = memById(cp.memberId);
       const kr = Math.round(total * (cp.pct||0) / 100);
       return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
         <div style="flex:1"><div style="font-size:13px;color:var(--cream)">${escapeHtml(m?m.name:'?')}</div>
           <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m?m.instrument||m.category:'')}</div></div>
-        <input type="number" class="input" style="width:80px;text-align:right" step="0.1" value="${cp.pct||0}"
-          oninput="CALC_PCT[${i}].pct=Number(this.value)||0;drawCalc()">
+        <input type="number" class="input no-spinner" style="width:80px;text-align:right" step="0.1" value="${cp.pct||0}"
+          oninput="CALC_PCT[${i}].pct=Number(this.value)||0;updateCalcDerived()">
         <span style="font-family:var(--font-mono);font-size:11px;color:var(--cream-mute);width:16px">%</span>
-        <span style="font-family:var(--font-mono);font-size:13px;color:var(--amber);width:90px;text-align:right">${kr.toLocaleString('da-DK')} kr</span>
+        <span class="calc-row-kr" data-i="${i}" style="font-family:var(--font-mono);font-size:13px;color:var(--amber);width:90px;text-align:right">${kr.toLocaleString('da-DK')} kr</span>
       </div>`;
     }).join('');
     const sumPct = CALC_PCT.reduce((s,x)=>s+(x.pct||0),0);
-    rows += `<div style="margin-top:10px;font-family:var(--font-mono);font-size:11px;text-align:right;color:${Math.abs(sumPct-100)<0.05?'var(--ok)':'var(--danger)'}">
+    rows += `<div id="calcSumLine" style="margin-top:10px;font-family:var(--font-mono);font-size:11px;text-align:right;color:${Math.abs(sumPct-100)<0.05?'var(--ok)':'var(--danger)'}">
       Procenter i alt: ${sumPct.toFixed(1)}%${Math.abs(sumPct-100)>=0.05?' (skal summere til 100%)':''}
     </div>`;
+  } else {
+    // mix: Provision (fra toppen) + Crew-rate pr. crew-medlem + resten ligeligt mellem ikke-crew
+    const crewMembers = EDITING_ATTENDEES.filter(a => { const m = memById(a.memberId); return m && m.category === 'Crew'; });
+    const nonCrewMembers = EDITING_ATTENDEES.filter(a => { const m = memById(a.memberId); return !(m && m.category === 'Crew'); });
+    const crewTotal = crewMembers.length * (CALC_CREW_RATE||0);
+    const rest = total - (CALC_PROVISION||0) - crewTotal;
+    const nNon = nonCrewMembers.length;
+    const baseNon = nNon > 0 ? Math.floor(rest / nNon) : 0;
+    const remNon = nNon > 0 ? rest - baseNon * nNon : 0;
+    rows = `
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
+        <div style="flex:1"><div style="font-size:13px;color:var(--cream)">Provision</div>
+          <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">Trækkes fra toppen</div></div>
+        <input type="number" class="input no-spinner" style="width:120px;text-align:right" value="${CALC_PROVISION||0}"
+          oninput="CALC_PROVISION=Number(this.value)||0;updateCalcDerived()">
+        <span style="font-family:var(--font-mono);font-size:11px;color:var(--cream-mute);width:20px">kr</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
+        <div style="flex:1"><div style="font-size:13px;color:var(--cream)">Crew (pr. person)</div>
+          <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${crewMembers.length} crew · sum <span class="calc-crew-sum">${crewTotal.toLocaleString('da-DK')}</span> kr</div></div>
+        <input type="number" class="input no-spinner" style="width:120px;text-align:right" value="${CALC_CREW_RATE||0}"
+          oninput="CALC_CREW_RATE=Number(this.value)||0;updateCalcDerived()">
+        <span style="font-family:var(--font-mono);font-size:11px;color:var(--cream-mute);width:20px">kr</span>
+      </div>
+      <div style="margin:10px 0 4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--cream-mute)">Resten fordeles ligeligt på ${nNon} ikke-crew</div>
+      ${nonCrewMembers.map((a,i) => {
+        const m = memById(a.memberId);
+        const s = nNon > 0 ? baseNon + (i < remNon ? 1 : 0) : 0;
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--ink-line-soft)">
+          <div><div style="font-size:13px;color:var(--cream)">${escapeHtml(m?m.name:'?')}</div>
+            <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m?m.instrument||m.category:'')}</div></div>
+          <div class="calc-mix-non-amount" data-mid="${escapeHtml(a.memberId)}" style="font-family:var(--font-mono);font-size:14px;color:var(--amber)">${s.toLocaleString('da-DK')} kr</div>
+        </div>`;
+      }).join('')}
+      ${crewMembers.length ? `<div style="margin:10px 0 4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--cream-mute)">Crew (fast rate pr. person)</div>` : ''}
+      ${crewMembers.map(a => {
+        const m = memById(a.memberId);
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--ink-line-soft)">
+          <div><div style="font-size:13px;color:var(--cream)">${escapeHtml(m?m.name:'?')}</div>
+            <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m?m.instrument||m.category:'')}</div></div>
+          <div class="calc-mix-crew-amount" style="font-family:var(--font-mono);font-size:14px;color:var(--amber)">${(CALC_CREW_RATE||0).toLocaleString('da-DK')} kr</div>
+        </div>`;
+      }).join('')}
+      <div id="calcSumLine" style="margin-top:10px;font-family:var(--font-mono);font-size:11px;text-align:right;color:${rest>=0?'var(--ok)':'var(--danger)'}">
+        Provision ${(CALC_PROVISION||0).toLocaleString('da-DK')} kr + Crew ${crewTotal.toLocaleString('da-DK')} kr + Rest ${rest.toLocaleString('da-DK')} kr = ${((CALC_PROVISION||0)+crewTotal+rest).toLocaleString('da-DK')} kr ${rest<0?'(overskredet)':''}
+      </div>
+    `;
   }
 
   document.getElementById('honorarCalcBody').innerHTML = `
@@ -1114,16 +1179,79 @@ function drawCalc(){
       <button style="flex:1;padding:8px 6px;border:0;border-radius:var(--radius-sm);font-size:12px;font-family:var(--font-mono);cursor:pointer;letter-spacing:.06em;${tab('equal')}" onclick="CALC_METHOD='equal';drawCalc()">Ligeligt</button>
       <button style="flex:1;padding:8px 6px;border:0;border-radius:var(--radius-sm);font-size:12px;font-family:var(--font-mono);cursor:pointer;letter-spacing:.06em;${tab('individual')}" onclick="CALC_METHOD='individual';drawCalc()">Individuelt</button>
       <button style="flex:1;padding:8px 6px;border:0;border-radius:var(--radius-sm);font-size:12px;font-family:var(--font-mono);cursor:pointer;letter-spacing:.06em;${tab('pct')}" onclick="CALC_METHOD='pct';drawCalc()">Procent</button>
+      <button style="flex:1;padding:8px 6px;border:0;border-radius:var(--radius-sm);font-size:12px;font-family:var(--font-mono);cursor:pointer;letter-spacing:.06em;${tab('mix')}" onclick="CALC_METHOD='mix';drawCalc()">Fordel</button>
     </div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;background:rgba(232,168,103,.06);border:1px solid rgba(232,168,103,.2);border-radius:var(--radius);padding:10px 12px">
       <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--amber);white-space:nowrap">Total honorar</div>
-      <input type="number" class="input" id="calcTotalInput" value="${total||''}" placeholder="Indtast beløb…"
+      <input type="number" class="input no-spinner" id="calcTotalInput" value="${total||''}" placeholder="Indtast beløb…"
         style="flex:1;text-align:right;font-family:var(--font-mono);font-size:15px;color:var(--amber);border-color:rgba(232,168,103,.3);background:rgba(8,17,31,.4)"
-        oninput="EDITING.honorar=Number(this.value)||0;const hb=document.querySelector('#cForm [data-bind=honorar]');if(hb)hb.value=EDITING.honorar;drawCalc()">
+        oninput="EDITING.honorar=Number(this.value)||0;const hb=document.querySelector('#cForm [data-bind=honorar]');if(hb)hb.value=EDITING.honorar;updateCalcDerived()">
       <div style="font-family:var(--font-mono);font-size:12px;color:var(--cream-mute)">kr · ${n} pers.</div>
     </div>
     ${rows}
   `;
+}
+
+function updateCalcDerived(){
+  const total = EDITING.honorar || 0;
+  const n = EDITING_ATTENDEES.length;
+  const memById = id => (CACHE.members||[]).find(m=>m.id===id);
+  if (CALC_METHOD === 'equal') {
+    const base = n > 0 ? Math.floor(total / n) : 0;
+    const rem  = total - base * n;
+    document.querySelectorAll('#honorarCalcBody .calc-row-amount').forEach(el => {
+      const i = Number(el.getAttribute('data-i'));
+      const s = base + (i < rem ? 1 : 0);
+      el.textContent = s.toLocaleString('da-DK') + ' kr';
+    });
+  } else if (CALC_METHOD === 'individual') {
+    const sumInd = CALC_INDIVIDUAL.reduce((s,x)=>s+(x.share||0),0);
+    const diff = total - sumInd;
+    const sumEl = document.getElementById('calcSumLine');
+    if (sumEl) {
+      sumEl.style.color = Math.abs(diff)<1 ? 'var(--ok)' : 'var(--danger)';
+      sumEl.textContent = 'Sum: ' + sumInd.toLocaleString('da-DK') + ' kr' +
+        (Math.abs(diff)>=1 ? ' · Diff: ' + (diff>0?'+':'') + diff.toLocaleString('da-DK') + ' kr' : '');
+    }
+  } else if (CALC_METHOD === 'pct') {
+    document.querySelectorAll('#honorarCalcBody .calc-row-kr').forEach(el => {
+      const i = Number(el.getAttribute('data-i'));
+      const cp = CALC_PCT[i];
+      const kr = Math.round(total * ((cp && cp.pct)||0) / 100);
+      el.textContent = kr.toLocaleString('da-DK') + ' kr';
+    });
+    const sumPct = CALC_PCT.reduce((s,x)=>s+(x.pct||0),0);
+    const sumEl = document.getElementById('calcSumLine');
+    if (sumEl) {
+      sumEl.style.color = Math.abs(sumPct-100)<0.05 ? 'var(--ok)' : 'var(--danger)';
+      sumEl.textContent = 'Procenter i alt: ' + sumPct.toFixed(1) + '%' +
+        (Math.abs(sumPct-100)>=0.05 ? ' (skal summere til 100%)' : '');
+    }
+  } else {
+    // mix
+    const crewMembers = EDITING_ATTENDEES.filter(a => { const m = memById(a.memberId); return m && m.category === 'Crew'; });
+    const nonCrewMembers = EDITING_ATTENDEES.filter(a => { const m = memById(a.memberId); return !(m && m.category === 'Crew'); });
+    const crewTotal = crewMembers.length * (CALC_CREW_RATE||0);
+    const rest = total - (CALC_PROVISION||0) - crewTotal;
+    const nNon = nonCrewMembers.length;
+    const baseNon = nNon > 0 ? Math.floor(rest / nNon) : 0;
+    const remNon = nNon > 0 ? rest - baseNon * nNon : 0;
+    const crewSumEl = document.querySelector('#honorarCalcBody .calc-crew-sum');
+    if (crewSumEl) crewSumEl.textContent = crewTotal.toLocaleString('da-DK');
+    document.querySelectorAll('#honorarCalcBody .calc-mix-crew-amount').forEach(el => {
+      el.textContent = (CALC_CREW_RATE||0).toLocaleString('da-DK') + ' kr';
+    });
+    const nonEls = document.querySelectorAll('#honorarCalcBody .calc-mix-non-amount');
+    nonEls.forEach((el, i) => {
+      const s = nNon > 0 ? baseNon + (i < remNon ? 1 : 0) : 0;
+      el.textContent = s.toLocaleString('da-DK') + ' kr';
+    });
+    const sumEl = document.getElementById('calcSumLine');
+    if (sumEl) {
+      sumEl.style.color = rest >= 0 ? 'var(--ok)' : 'var(--danger)';
+      sumEl.textContent = 'Provision ' + (CALC_PROVISION||0).toLocaleString('da-DK') + ' kr + Crew ' + crewTotal.toLocaleString('da-DK') + ' kr + Rest ' + rest.toLocaleString('da-DK') + ' kr = ' + ((CALC_PROVISION||0)+crewTotal+rest).toLocaleString('da-DK') + ' kr' + (rest<0 ? ' (overskredet)' : '');
+    }
+  }
 }
 
 function applyHonorarCalc(){
@@ -1138,10 +1266,29 @@ function applyHonorarCalc(){
       const ci = CALC_INDIVIDUAL.find(x=>x.memberId===a.memberId);
       if (ci) a.share = ci.share || 0;
     });
-  } else {
+  } else if (CALC_METHOD === 'pct') {
     EDITING_ATTENDEES.forEach(a => {
       const cp = CALC_PCT.find(x=>x.memberId===a.memberId);
       if (cp) a.share = Math.round(total * (cp.pct||0) / 100);
+    });
+  } else {
+    // mix: provision deducted, crew gets fixed rate, rest split equally among non-crew
+    const memById = id => (CACHE.members||[]).find(m=>m.id===id);
+    const crewIds = new Set(EDITING_ATTENDEES.filter(a => { const m = memById(a.memberId); return m && m.category === 'Crew'; }).map(a => a.memberId));
+    const nonCrewIds = EDITING_ATTENDEES.map(a => a.memberId).filter(id => !crewIds.has(id));
+    const crewTotal = crewIds.size * (CALC_CREW_RATE||0);
+    const rest = total - (CALC_PROVISION||0) - crewTotal;
+    const nNon = nonCrewIds.length;
+    const baseNon = nNon > 0 ? Math.floor(rest / nNon) : 0;
+    const remNon = nNon > 0 ? rest - baseNon * nNon : 0;
+    let nonIdx = 0;
+    EDITING_ATTENDEES.forEach(a => {
+      if (crewIds.has(a.memberId)) {
+        a.share = CALC_CREW_RATE || 0;
+      } else {
+        a.share = nNon > 0 ? baseNon + (nonIdx < remNon ? 1 : 0) : 0;
+        nonIdx++;
+      }
     });
   }
   closeHonorarCalc();
@@ -1271,7 +1418,7 @@ function drawPreview(){
         <img src="${DMD_LOGO_B64}" alt="Danser med Drenge Tribute" style="height:48px;object-fit:contain">
         <div style="color:#fff;font-size:26px;font-weight:700;font-family:'Inter',sans-serif;letter-spacing:.02em">kontrakt</div>
         <div style="text-align:right;color:rgba(255,255,255,.65);font-size:10px;font-family:'JetBrains Mono',monospace;line-height:1.4">
-          Kontrakt<br>Nr. <strong style="color:#fff;font-size:12px">${escapeHtml(c.id||'—')}</strong>
+          Nr. <strong style="color:#fff;font-size:12px">${escapeHtml(c.id||'—')}</strong>
         </div>
       </div>
 
@@ -1356,11 +1503,8 @@ function drawPreview(){
         </ul>
       </div>
 
-      <!-- Godkendelse bokse -->
-      <div style="display:flex;gap:0;margin-top:14px;border:1px solid #B8A88A">
-        <div style="flex:1;background:#D9CFBE;padding:20px 10px 8px;font-size:11px;font-weight:600;color:#333;border-right:1px solid #B8A88A">Arrangør godkendelse</div>
-        <div style="flex:1;background:#D9CFBE;padding:20px 10px 8px;font-size:11px;font-weight:600;color:#333">Optrædende godkendelse</div>
-      </div>
+      <!-- Godkendelse bjælke -->
+      <div style="background:#666;color:#fff;text-align:center;padding:5px 8px;font-size:12px;font-weight:600;margin-top:14px">Gensidig godkendelse</div>
 
       <!-- Acceptance tekst -->
       <div style="margin-top:12px;font-size:11px;color:#2A2A2A;line-height:1.6;padding:0 4px">
@@ -1463,15 +1607,49 @@ function drawPreview(){
   `;
 }
 
+function toggleContractIdEdit(){
+  const inp = document.getElementById('contractIdInput');
+  if (!inp) return;
+  if (inp.readOnly) {
+    if (!EDITING._originalId) EDITING._originalId = EDITING.id;
+    inp.readOnly = false;
+    inp.style.opacity = '';
+    inp.style.cursor = '';
+    inp.focus();
+    inp.select();
+  } else {
+    inp.readOnly = true;
+    inp.style.opacity = '.7';
+    inp.style.cursor = 'default';
+  }
+}
+
+let SAVING_CONTRACT = false;
 async function saveContract(){
+  if (SAVING_CONTRACT) return;
+  SAVING_CONTRACT = true;
+  const btns = document.querySelectorAll('button[onclick="saveContract()"]');
+  const originalLabels = [];
+  btns.forEach(b => {
+    originalLabels.push(b.innerHTML);
+    b.disabled = true;
+    b.innerHTML = '<span class="spinner"></span> Gemmer…';
+  });
   try {
-    const d = await apiPost('saveContract', { contract: EDITING, attendees: EDITING_ATTENDEES });
+    const payload = { contract: EDITING, attendees: EDITING_ATTENDEES };
+    if (EDITING._originalId) payload.originalId = EDITING._originalId;
+    const d = await apiPost('saveContract', payload);
     if (!d.ok){ toast(d.error,'err'); return; }
     toast('Gemt');
     EDITING.id = d.id;
+    EDITING._originalId = d.id;
     CACHE.contracts = null;
     setAdminRoute('contractEdit', { id: d.id });
   } catch(e){ toast(e.message,'err'); }
+  finally {
+    SAVING_CONTRACT = false;
+    btns.forEach((b, i) => { b.disabled = false; b.innerHTML = originalLabels[i]; });
+  }
 }
 
 async function deleteContract(){
@@ -1527,6 +1705,8 @@ async function renderMembers(){
 function drawMembersGrid(){
   const wrap = document.getElementById('membersGrid');
   if (!wrap || !CACHE.members) return;
+  document.querySelectorAll('#memberFilter button').forEach(b =>
+    b.classList.toggle('on', b.getAttribute('data-f') === ADMIN_STATE.memberFilter));
   let rows = CACHE.members.slice();
   if (ADMIN_STATE.memberFilter !== 'alle') rows = rows.filter(m=>m.category===ADMIN_STATE.memberFilter);
   if (!rows.length){ wrap.innerHTML = '<div class="empty">Ingen medlemmer.</div>'; return; }
@@ -1680,8 +1860,6 @@ function jobCardHtml(j){
   const d = fmtDateShort(j.date);
   const venue = (j.venue && j.venue.name) || 'Uden navn';
   const city = (j.venue && j.venue.city) || '';
-  const isConfirmed = j.status === 'confirmed' || j.status === 'checked_in';
-  const isDeclined = j.status === 'declined';
   return `
     <div class="card job-card" data-att="${escapeHtml(j.attendanceId)}">
       <div class="job-date">
@@ -1694,31 +1872,12 @@ function jobCardHtml(j){
         <div class="job-meta">${escapeHtml(city)} · ${escapeHtml(j.type||'')} · ${escapeHtml(j.showtimeFrom||'')}</div>
         <div class="job-share">Din andel: ${fmtMoney(j.share)}</div>
       </div>
-      <div class="attend-toggle" onclick="event.stopPropagation()">
-        ${isConfirmed
-          ? `<span class="confirmed-pill">✓ Bekræftet</span>`
-          : `<button class="btn btn-primary btn-sm" data-act="confirm" data-att="${escapeHtml(j.attendanceId)}">Jeg er med</button>`}
-      </div>
     </div>`;
 }
 
 function bindJobCards(jobs){
   document.querySelectorAll('.job-card').forEach(card => {
     card.onclick = ()=>{ setMemberView('jobDetail', { attendanceId: card.getAttribute('data-att') }); };
-  });
-  document.querySelectorAll('[data-act]').forEach(b=>{
-    b.onclick = async (e)=>{
-      e.stopPropagation();
-      const att = b.getAttribute('data-att');
-      const act = b.getAttribute('data-act');
-      const status = act === 'confirm' ? 'confirmed' : act === 'decline' ? 'declined' : 'invited';
-      try {
-        const d = await apiPost('setAttendance', { attendanceId: att, status: status });
-        if (!d.ok){ toast(d.error,'err'); return; }
-        toast(act === 'confirm' ? 'Bekræftet ✓' : act === 'decline' ? 'Markeret som kan ikke' : 'Nulstillet');
-        renderMyJobs();
-      } catch(e){ toast(e.message,'err'); }
-    };
   });
 }
 
@@ -1733,7 +1892,13 @@ async function renderJobDetail(attId){
     MEMBER_JOB = d.job;
     const j = d.job;
     const c = j.contract;
-    const checkedIn = j.status === 'checked_in';
+    const besaetningCount = (j.besaetning || []).length;
+    const besaetningPills = (j.besaetning || []).map(b =>
+      `<div class="member-pill">
+         <div class="avatar">${escapeHtml((b.name||'').split(' ').map(n=>n[0]).slice(0,2).join(''))}</div>
+         <div style="font-size:13px;color:var(--cream);line-height:1.2">${escapeHtml((b.name||'').split(' ')[0])}</div>
+         <div class="mono" style="font-size:9px;color:var(--cream-mute);letter-spacing:0.1em;text-transform:uppercase">${escapeHtml(b.instrument||'')}</div>
+       </div>`).join('');
     main.innerHTML = `
       <div class="page-head">
         <div>
@@ -1758,24 +1923,16 @@ async function renderJobDetail(attId){
         <div class="serif" style="font-size:20px;margin:6px 0">${escapeHtml((c.venue&&c.venue.address)||'—')}</div>
         <div class="muted">${escapeHtml((c.venue&&c.venue.postnr)||'')} ${escapeHtml((c.venue&&c.venue.city)||'')}</div>
       </div>
-      <div class="card checkin-card">
-        <div class="ck-text">
-          <div class="lbl">Når du er ankommet</div>
-          <h2>${checkedIn ? 'Du er tjekket ind' : 'Tjek ind'}</h2>
+      <div class="card" style="margin-bottom:14px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div class="eyebrow warm">Besætning</div>
+          ${besaetningCount ? `<span class="count-badge">${besaetningCount} ${besaetningCount===1?'person':'personer'}</span>` : ''}
         </div>
-        <button class="btn ${checkedIn?'btn-ghost':'btn-primary'} btn-lg" id="checkinBtn">
-          ${checkedIn ? 'Fortryd tjek-ind' : '✓ Tjek ind'}
-        </button>
+        <div class="member-pill-row">
+          ${besaetningPills || '<div class="muted" style="font-size:13px">Ingen registreret endnu</div>'}
+        </div>
       </div>
     `;
-    document.getElementById('checkinBtn').onclick = async ()=>{
-      try {
-        const d = await apiPost('checkIn', { attendanceId: attId, undo: checkedIn });
-        if (!d.ok){ toast(d.error,'err'); return; }
-        toast(checkedIn ? 'Fortrudt' : '✓ Tjekket ind');
-        renderJobDetail(attId);
-      } catch(e){ toast(e.message,'err'); }
-    };
   } catch(e){ toast(e.message,'err'); }
 }
 
