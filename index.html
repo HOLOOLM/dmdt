@@ -2135,11 +2135,11 @@ function downloadFakturaPDF(){
   if (!w){ toast('Popup blokeret — tillad popups for denne side og prøv igen','err'); return; }
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Faktura</title><style>${pdfPrintStyles()}body{display:flex;align-items:center;justify-content:center;min-height:100vh}.loading{font-family:'Inter',sans-serif;color:#8A6F4D;font-size:14px}</style></head><body><div class="loading">Reserverer fakturanr…</div></body></html>`);
 
-  // Lokal fallback-nr hvis backend ikke svarer
-  const dateObj = c.date ? new Date(c.date) : new Date();
-  const year = dateObj.getFullYear();
-  const digits = String(c.id||'').replace(/[^0-9]/g,'') || '1';
-  const localNr = year + '-' + digits.slice(-3).padStart(3,'0');
+  const renderError = (msg) => {
+    if (w.closed) return;
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Faktura-fejl</title><style>body{font-family:'Inter',sans-serif;padding:40px;color:#0F213C;max-width:520px;margin:0 auto;text-align:center}h2{color:#A04040}</style></head><body><h2>Kunne ikke reservere fakturanr</h2><p>${escapeHtml(msg)}</p><p style="color:#666">Luk vinduet og prøv igen. Der er ikke oprettet nogen række.</p></body></html>`;
+    w.document.open(); w.document.write(html); w.document.close();
+  };
 
   // Fyld vinduet med faktura + manuel print-knap (auto-print låser parent-vinduet i nogle browsere)
   const renderInto = (nr) => {
@@ -2154,22 +2154,25 @@ function downloadFakturaPDF(){
     w.document.open(); w.document.write(html); w.document.close();
   };
 
-  // Reservér fakturanr + opret række i Fakturaer-fanen (uden PDF-fil — den uploades manuelt på fakturarækken)
+  // Reservér fakturanr + opret/find række i Fakturaer-fanen.
+  // Backend genbruger eksisterende række hvis kontrakten allerede har en aktiv faktura,
+  // så popup-nummeret matcher altid rækken i Fakturaer-fanen.
   apiPost('createInvoice', { contractId: c.id, reserveOnly: true })
     .then(d => {
-      if (d && d.ok && d.invoice){
-        const nr = d.invoice.invoiceNr || localNr;
+      if (d && d.ok && d.invoice && d.invoice.invoiceNr){
         cacheBust('invoices');
-        renderInto(nr);
-        toast(`Faktura ${nr} oprettet — print, gem som PDF og upload den fra Fakturaer-fanen`);
+        renderInto(d.invoice.invoiceNr);
+        toast(`Faktura ${d.invoice.invoiceNr} ${d.reused ? 'genfundet' : 'oprettet'} — print, gem som PDF og upload den fra Fakturaer-fanen`);
       } else {
-        renderInto(localNr);
-        if (d && d.error) toast('Kunne ikke oprette faktura-række: '+d.error,'err');
+        const msg = (d && d.error) || 'ukendt fejl';
+        renderError(msg);
+        toast('Kunne ikke reservere fakturanr: '+msg,'err');
       }
     })
     .catch(e => {
-      renderInto(localNr);
-      toast('Kunne ikke oprette faktura-række: '+(e.message||e),'err');
+      const msg = e.message || String(e);
+      renderError(msg);
+      toast('Kunne ikke reservere fakturanr: '+msg,'err');
     });
 }
 
