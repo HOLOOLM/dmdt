@@ -1742,7 +1742,8 @@ function openMemberDrawer(id){
       <div class="field"><label>Instrument</label><input id="md_instrument" class="input" value="${escapeHtml((m&&m.instrument)||'')}"></div>
       <div class="row-2">
         <div class="field"><label>Telefon</label><input id="md_phone" class="input" value="${escapeHtml((m&&m.phone)||'')}"></div>
-        <div class="field"><label>Email</label><input id="md_email" class="input" type="email" value="${escapeHtml((m&&m.email)||'')}" ${m?'disabled':''}></div>
+        <div class="field"><label>Email</label><input id="md_email" class="input" type="email" value="${escapeHtml((m&&m.email)||'')}">
+          ${m?`<div class="muted" style="font-size:11px;margin-top:3px">Bruges til login — ændring træder i kraft ved næste login.</div>`:''}</div>
       </div>
       <div class="row-2">
         <div class="field"><label>Reg. + konto</label><input id="md_regAccount" class="input" value="${escapeHtml((m&&m.regAccount)||'')}" placeholder="1234-5678901234"></div>
@@ -1979,27 +1980,18 @@ async function loadHonorar(){
         <button class="btn btn-primary btn-sm" onclick="memberDownloadHonorar()">↓ Download PDF</button>
       </div>
       <table class="table">
-        <thead><tr><th>Dato</th><th>Spillested / Tidspunkter</th><th>Type</th><th>Status</th><th style="text-align:right">Andel</th></tr></thead>
+        <thead><tr><th>Spilledato</th><th>Jobtitel</th><th>Adresse</th><th style="text-align:right">Hyre</th></tr></thead>
         <tbody>
           ${d.rows.map(r=>{
-            const times = [r.getIn&&(r.getIn+' get-in'), r.soundcheck&&(r.soundcheck+' lydprøve'), (r.showtimeFrom||r.showtimeTo)&&([r.showtimeFrom,r.showtimeTo].filter(Boolean).join('–')+' show'), r.sets&&(r.sets+'×'+r.setMinutes+' min')].filter(Boolean).join(' · ');
-            const crew = (r.besaetning||[]).join(' · ');
+            const venue = r.venue || {};
+            const adresse = [venue.address, [venue.postnr, venue.city].filter(Boolean).join(' ')].filter(Boolean).join(', ');
             return `<tr>
               <td class="mono" style="color:var(--amber);white-space:nowrap">${fmtDate(r.date)}</td>
-              <td>
-                <span class="serif" style="font-size:15px">${escapeHtml((r.venue&&r.venue.name)||'—')}</span>
-                <span class="muted"> · ${escapeHtml((r.venue&&r.venue.city)||'')}</span>
-                ${times?`<div style="font-size:11px;color:var(--cream-mute);margin-top:2px">${escapeHtml(times)}</div>`:''}
-                ${crew?`<div style="font-size:11px;color:var(--cream-mute)">${escapeHtml(crew)}</div>`:''}
-              </td>
-              <td>${escapeHtml(r.type||'')}</td>
-              <td>
-                ${statusBadge(r.status)}
-                ${r.attendanceStatus && r.attendanceStatus !== 'invited' ? `<div style="font-size:10px;font-family:var(--font-mono);color:var(--cream-mute);margin-top:3px;letter-spacing:.06em">${escapeHtml(r.attendanceStatus)}</div>` : ''}
-              </td>
+              <td><span class="serif" style="font-size:15px">${escapeHtml(venue.name||'—')}</span></td>
+              <td style="font-size:12px;color:var(--cream-mute)">${escapeHtml(adresse)}</td>
               <td style="text-align:right" class="mono">${fmtMoney(r.share)}</td>
             </tr>`;}).join('')}
-          <tr style="background:rgba(232,168,103,.06)"><td colspan="4" class="mono" style="text-align:right;color:var(--amber)">TOTAL</td><td style="text-align:right" class="mono"><strong>${fmtMoney(d.total)}</strong></td></tr>
+          <tr style="background:rgba(232,168,103,.06)"><td colspan="3" class="mono" style="text-align:right;color:var(--amber)">TOTAL</td><td style="text-align:right" class="mono"><strong>${fmtMoney(d.total)}</strong></td></tr>
         </tbody>
       </table>`;
   } catch(e){ toast(e.message,'err'); }
