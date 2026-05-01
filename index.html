@@ -499,6 +499,11 @@ function maskRegAccount(v){
   const s = String(v).replace(/\s+/g,'');
   return s.length >= 4 ? '****-' + s.slice(-4) : '****';
 }
+
+function isMaskedValue(v){
+  const s = String(v || '').trim();
+  return s.includes('*') || s.includes('•');
+}
 function initials(name){ return String(name||'?').split(/\s+/).map(p=>p[0]).filter(Boolean).slice(0,2).join('').toUpperCase(); }
 function fmtDate(d){
   if(!d) return '—';
@@ -1770,8 +1775,26 @@ function openMemberDrawer(id){
           ${m?`<div class="muted" style="font-size:11px;margin-top:3px">Bruges til login — ændring træder i kraft ved næste login.</div>`:''}</div>
       </div>
       <div class="row-2">
-        <div class="field"><label>Reg. + konto</label><input id="md_regAccount" class="input" value="${escapeHtml((m&&(m.regAccount||m.regAccountMasked))||'')}" placeholder="1234-5678901234"></div>
-        <div class="field"><label>CPR</label><input id="md_cpr" class="input" value="${escapeHtml((m&&(m.cpr||m.cprMasked))||'')}" placeholder="DDMMÅÅ-XXXX"></div>
+        <div class="field">
+          <label>Reg. + konto</label>
+          <div style="display:flex;gap:8px">
+            <input id="md_regAccount" class="input" value="" placeholder="${m && m.hasRegAccount ? 'Reg./konto er registreret — skriv kun hvis det skal ændres' : '1234-5678901234'}">
+            ${m && m.hasRegAccount ? `<button type="button" class="btn btn-ghost btn-sm" onclick="revealMemberRegAccount('${escapeHtml(m.id)}')">Vis</button>` : ''}
+          </div>
+          <div class="muted" style="font-size:11px;margin-top:3px">
+            ${m && m.hasRegAccount ? `Reg./konto registreret${m.regAccountMasked ? ': ' + escapeHtml(m.regAccountMasked) : ''}` : 'Reg./konto ikke registreret'}
+          </div>
+        </div>
+        <div class="field">
+          <label>CPR</label>
+          <div style="display:flex;gap:8px">
+            <input id="md_cpr" class="input" value="" placeholder="${m && m.hasCpr ? 'CPR er registreret — skriv kun hvis det skal ændres' : 'DDMMÅÅ-XXXX'}">
+            ${m && m.hasCpr ? `<button type="button" class="btn btn-ghost btn-sm" onclick="revealMemberCpr('${escapeHtml(m.id)}')">Vis</button>` : ''}
+          </div>
+          <div class="muted" style="font-size:11px;margin-top:3px">
+            ${m && m.hasCpr ? `CPR registreret${m.cprMasked ? ': ' + escapeHtml(m.cprMasked) : ''}` : 'CPR ikke registreret'}
+          </div>
+        </div>
       </div>
       ${m ? `<div class="card" style="padding:14px;margin-top:6px">
         <div class="eyebrow" style="margin-bottom:6px">Adgangskode</div>
@@ -1788,6 +1811,26 @@ function openMemberDrawer(id){
   document.getElementById('drawerBackdrop').classList.add('show');
 }
 
+async function revealMemberCpr(memberId){
+  if (!memberId) return;
+  if (!confirm('Vis CPR for dette medlem?')) return;
+  try {
+    const d = await apiPost('revealMemberSensitiveField', { memberId: memberId, field: 'cpr' });
+    if (!d || !d.ok){ toast((d && d.error) || 'Kunne ikke hente CPR', 'err'); return; }
+    alert('CPR: ' + (d.value || 'Ikke registreret'));
+  } catch(e){ toast(e.message || String(e), 'err'); }
+}
+
+async function revealMemberRegAccount(memberId){
+  if (!memberId) return;
+  if (!confirm('Vis registrerings- og kontonummer for dette medlem?')) return;
+  try {
+    const d = await apiPost('revealMemberSensitiveField', { memberId: memberId, field: 'regAccount' });
+    if (!d || !d.ok){ toast((d && d.error) || 'Kunne ikke hente reg./konto', 'err'); return; }
+    alert('Reg./konto: ' + (d.value || 'Ikke registreret'));
+  } catch(e){ toast(e.message || String(e), 'err'); }
+}
+
 function closeDrawer(){
   document.getElementById('drawer').classList.remove('show');
   document.getElementById('drawerBackdrop').classList.remove('show');
@@ -1801,10 +1844,27 @@ async function saveMember(id){
     role: document.getElementById('md_role').value,
     instrument: document.getElementById('md_instrument').value.trim(),
     phone: document.getElementById('md_phone').value.trim(),
-    email: document.getElementById('md_email').value.trim(),
-    regAccount: document.getElementById('md_regAccount').value.trim(),
-    cpr: document.getElementById('md_cpr').value.trim()
+    email: document.getElementById('md_email').value.trim()
   };
+
+  const regAccountInput = document.getElementById('md_regAccount').value.trim();
+  if (regAccountInput) {
+    if (isMaskedValue(regAccountInput)) {
+      toast('Reg./konto-feltet indeholder en maskeret værdi og bliver ikke gemt. Skriv hele reg./konto hvis det skal ændres.', 'err');
+      return;
+    }
+    member.regAccount = regAccountInput;
+  }
+
+  const cprInput = document.getElementById('md_cpr').value.trim();
+  if (cprInput) {
+    if (isMaskedValue(cprInput)) {
+      toast('CPR-feltet indeholder en maskeret værdi og bliver ikke gemt. Skriv hele CPR-nummeret hvis det skal ændres.', 'err');
+      return;
+    }
+    member.cpr = cprInput;
+  }
+
   if (!member.name || !member.email){ toast('Navn og email er påkrævet','err'); return; }
   try {
     const d = await apiPost('saveMember', { member: member });
