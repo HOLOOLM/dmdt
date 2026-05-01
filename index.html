@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="da">
 <head>
 <meta charset="UTF-8">
@@ -407,7 +407,8 @@ document.querySelectorAll('img.dmdt-logo').forEach(function(el){el.src=DMD_LOGO_
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxQlGk_6d2eGzeLwgkzZdL9OBd5HmQNNNIQiLxuZwk6XN3TX2J8QHh6T_RSGrl38wPn/exec';
 
 // State
-let SESSION = null; // { email, hash, role, member }
+let SESSION = null; // { token, email, role, member }
+let PENDING_LOGIN_HASH = null; // only held during forced password change
 let CACHE = { members: null, contracts: null, dashboard: null, invoices: null, _stamp: {} };
 const CACHE_TTL_MS = 45 * 1000;
 const CACHE_TTL_PER_KEY = { dashboard: 90 * 1000, invoices: 90 * 1000 };
@@ -448,7 +449,7 @@ function jsonp(params){
 }
 
 async function apiPost(action, payload){
-  const body = Object.assign({ action: action, email: SESSION ? SESSION.email : '', passwordHash: SESSION ? SESSION.hash : '' }, payload || {});
+  const body = Object.assign({ action: action, sessionToken: SESSION ? SESSION.token : '' }, payload || {});
   const res = await fetch(SCRIPT_URL, {
     method:'POST',
     headers:{ 'Content-Type':'text/plain;charset=utf-8' }, // undgå CORS-preflight
@@ -456,13 +457,15 @@ async function apiPost(action, payload){
   });
   return res.json();
 }
-
 async function apiGet(action, params){
+  // Authenticated reads must NOT use JSONP because querystrings leak credentials/tokens.
+  // Use POST for all calls after login. JSONP is only kept for login/changePassword fallback.
+  if (SESSION && SESSION.token) {
+    return apiPost(action, params || {});
+  }
   const p = Object.assign({ action: action }, params || {});
-  if (SESSION){ p.email = SESSION.email; p.passwordHash = SESSION.hash; }
   return jsonp(p);
 }
-
 function showErr(elId, msg){
   const el = document.getElementById(elId);
   el.textContent = msg; el.classList.add('show');
@@ -478,7 +481,24 @@ function toast(msg, kind){
   setTimeout(()=>{ if(t.parentNode) t.parentNode.removeChild(t); }, 2400);
 }
 
-function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeHtml(value){
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+function maskCpr(cpr){
+  if(!cpr) return '';
+  const s = String(cpr).replace(/\s+/g,'');
+  return s.length >= 4 ? '******-' + s.slice(-4) : '******';
+}
+function maskRegAccount(v){
+  if(!v) return '';
+  const s = String(v).replace(/\s+/g,'');
+  return s.length >= 4 ? '****-' + s.slice(-4) : '****';
+}
 function initials(name){ return String(name||'?').split(/\s+/).map(p=>p[0]).filter(Boolean).slice(0,2).join('').toUpperCase(); }
 function fmtDate(d){
   if(!d) return '—';
@@ -512,10 +532,11 @@ async function doLogin(){
     document.getElementById('loginStatus').classList.remove('show');
     btn.disabled = false;
     if (!d || !d.ok){ showErr('loginErr', (d && d.error) || 'Login mislykkedes.'); return; }
-    SESSION = { email: email, hash: hash, role: d.role || 'member', member: d.member };
+    SESSION = { token: d.sessionToken, email: email, role: d.role || 'member', member: d.member };
+    PENDING_LOGIN_HASH = hash;
     try {
       sessionStorage.setItem('dmdt_email', email);
-      sessionStorage.setItem('dmdt_hash', hash);
+      sessionStorage.setItem('dmdt_token', d.sessionToken || '');
     } catch(e){}
     // log
     jsonp({ action:'trackLogin', memberId: (d.member&&d.member.id)||'', email: email, ua: (navigator.userAgent||'').slice(0,200) }).catch(()=>{});
@@ -543,10 +564,10 @@ async function doChangePassword(){
   btn.disabled = true; btn.textContent = 'Gemmer...';
   try {
     const newHash = await sha256hex(a);
-    const d = await jsonp({ action:'changePassword', email: SESSION.email, oldHash: SESSION.hash, newHash: newHash });
+    const d = await jsonp({ action:'changePassword', email: SESSION.email, oldHash: PENDING_LOGIN_HASH || '', newHash: newHash });
     if (!d || !d.ok){ showErr('changePwErr', (d && d.error) || 'Kunne ikke gemme.'); btn.disabled = false; btn.textContent = 'Gem'; return; }
-    SESSION.hash = newHash;
-    try { sessionStorage.setItem('dmdt_hash', newHash); } catch(e){}
+    if (d.sessionToken) { SESSION.token = d.sessionToken; try { sessionStorage.setItem('dmdt_token', d.sessionToken); } catch(e){} }
+    PENDING_LOGIN_HASH = null;
     document.getElementById('changePwView').style.display = 'none';
     enterApp();
   } catch(err){
@@ -557,7 +578,7 @@ async function doChangePassword(){
 
 function logout(){
   SESSION = null;
-  try { sessionStorage.removeItem('dmdt_email'); sessionStorage.removeItem('dmdt_hash'); } catch(e){}
+  try { sessionStorage.removeItem('dmdt_email'); sessionStorage.removeItem('dmdt_token'); } catch(e){}
   document.getElementById('adminApp').style.display = 'none';
   document.getElementById('memberApp').style.display = 'none';
   document.getElementById('changePwView').style.display = 'none';
@@ -586,12 +607,15 @@ function enterApp(){
 async function tryRestore(){
   try {
     const email = sessionStorage.getItem('dmdt_email');
-    const hash = sessionStorage.getItem('dmdt_hash');
-    if (!email || !hash) return;
-    const d = await jsonp({ action:'login', email: email, passwordHash: hash });
+    const token = sessionStorage.getItem('dmdt_token');
+    if (!email || !token) return;
+    const d = await fetch(SCRIPT_URL, {
+      method:'POST',
+      headers:{ 'Content-Type':'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action:'validateSession', sessionToken: token })
+    }).then(r => r.json());
     if (d && d.ok){
-      SESSION = { email: email, hash: hash, role: d.role, member: d.member };
-      if (d.forcePasswordChange){ showChangePwView(); return; }
+      SESSION = { token: token, email: email, role: d.role, member: d.member };
       enterApp();
     }
   } catch(e){}
@@ -1746,8 +1770,8 @@ function openMemberDrawer(id){
           ${m?`<div class="muted" style="font-size:11px;margin-top:3px">Bruges til login — ændring træder i kraft ved næste login.</div>`:''}</div>
       </div>
       <div class="row-2">
-        <div class="field"><label>Reg. + konto</label><input id="md_regAccount" class="input" value="${escapeHtml((m&&m.regAccount)||'')}" placeholder="1234-5678901234"></div>
-        <div class="field"><label>CPR</label><input id="md_cpr" class="input" value="${escapeHtml((m&&m.cpr)||'')}" placeholder="DDMMÅÅ-XXXX"></div>
+        <div class="field"><label>Reg. + konto</label><input id="md_regAccount" class="input" value="${escapeHtml((m&&(m.regAccount||m.regAccountMasked))||'')}" placeholder="1234-5678901234"></div>
+        <div class="field"><label>CPR</label><input id="md_cpr" class="input" value="${escapeHtml((m&&(m.cpr||m.cprMasked))||'')}" placeholder="DDMMÅÅ-XXXX"></div>
       </div>
       ${m ? `<div class="card" style="padding:14px;margin-top:6px">
         <div class="eyebrow" style="margin-bottom:6px">Adgangskode</div>
@@ -2600,7 +2624,7 @@ function uploadInvoicePdf(invoiceId, invoiceNr){
 }
 
 async function deleteInvoice(id, nr){
-  if (!confirm(`Slet faktura ${nr}?\n\nDrive-filen flyttes til papirkurv og fakturanummeret frigives — næste nye faktura genbruger det første ledige nummer.`)) return;
+  if (!confirm(`Slet faktura ${nr}?\n\nFakturaen markeres som slettet i historikken, Drive-filen flyttes til papirkurv, og fakturanummeret bevares som brugt.`)) return;
   try {
     const d = await apiPost('deleteInvoice', { id: id });
     if (!d.ok){ toast(d.error||'Fejl','err'); return; }
