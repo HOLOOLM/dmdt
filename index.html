@@ -1910,7 +1910,7 @@ async function renderJobDetail(attId){
         <div class="eyebrow warm">Tider & honorar</div>
         <div class="kv-grid">
           <div class="kv"><div class="label">Get-in</div><div class="value">${escapeHtml(c.getIn||'—')}</div></div>
-          <div class="kv"><div class="label">Lydprøve</div><div class="value">${escapeHtml(c.soundcheck||'—')}</div></div>
+          <div class="kv"><div class="label">Lydprøve færdig</div><div class="value">${escapeHtml(c.soundcheck||'—')}</div></div>
           <div class="kv"><div class="label">Spilletid</div><div class="value">${escapeHtml(c.showtimeFrom||'—')}–${escapeHtml(c.showtimeTo||'—')}</div></div>
           <div class="kv"><div class="label">Din andel</div><div class="value" style="color:var(--amber)">${fmtMoney(j.share)}</div></div>
           ${c.sets ? `<div class="kv"><div class="label">Antal sæt</div><div class="value">${c.sets} × ${c.setMinutes} min</div></div>` : ''}
