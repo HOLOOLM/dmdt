@@ -1169,7 +1169,12 @@ let CALC_PROVISION_PCT = 20;
 
 function openHonorarCalc(){
   if (!EDITING_ATTENDEES.length){ toast('Vælg besætning i sektion 05 først','err'); return; }
-  CALC_INDIVIDUAL = EDITING_ATTENDEES.map(a=>({ memberId: a.memberId, share: a.share||0 }));
+  // Filtrér slettede medlemmer fra (de findes ikke længere i CACHE.members og ville ellers vises som "?")
+  const known = new Set((CACHE.members||[]).map(m => m.id));
+  const validAttendees = EDITING_ATTENDEES.filter(a => known.has(a.memberId));
+  const skipped = EDITING_ATTENDEES.length - validAttendees.length;
+  if (skipped > 0) toast(`${skipped} slettet${skipped===1?'':'e'} medlem${skipped===1?'':'mer'} ekskluderet fra fordelingen`);
+  CALC_INDIVIDUAL = validAttendees.map(a=>({ memberId: a.memberId, share: a.share||0, excluded: false }));
   CALC_METHOD = 'individual';
   document.getElementById('honorarCalcBackdrop').style.display = 'flex';
   drawCalc();
@@ -1181,20 +1186,25 @@ function closeHonorarCalc(){
 
 function drawCalc(){
   const total = EDITING.honorar || 0;
-  const n = EDITING_ATTENDEES.length;
+  const n = CALC_INDIVIDUAL.length;
+  const nActive = CALC_INDIVIDUAL.filter(x=>!x.excluded).length;
   const memById = id => (CACHE.members||[]).find(m=>m.id===id);
 
   const provKr = Math.round(total * (CALC_PROVISION_PCT||0) / 100);
-  const sumInd = CALC_INDIVIDUAL.reduce((s,x)=>s+(x.share||0),0);
+  const sumInd = CALC_INDIVIDUAL.filter(x=>!x.excluded).reduce((s,x)=>s+(x.share||0),0);
   const rest = total - provKr - sumInd;
-  const tomCount = CALC_INDIVIDUAL.filter(x => !((x.share||0) > 0)).length;
+  const tomCount = CALC_INDIVIDUAL.filter(x => !x.excluded && !((x.share||0) > 0)).length;
 
   const rows = CALC_INDIVIDUAL.map((ci,i) => {
     const m = memById(ci.memberId);
-    return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
-      <div style="flex:1"><div style="font-size:13px;color:var(--cream)">${escapeHtml(m?m.name:'?')}</div>
-        <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m?m.instrument||m.category:'')}</div></div>
-      <input type="number" class="input no-spinner" style="width:120px;text-align:right" value="${ci.share||0}"
+    const ex = !!ci.excluded;
+    return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ink-line-soft);${ex?'opacity:.45':''}">
+      <label title="Inkludér i fordelingen" style="display:flex;align-items:center;cursor:pointer">
+        <input type="checkbox" ${ex?'':'checked'} onchange="CALC_INDIVIDUAL[${i}].excluded=!this.checked;drawCalc()" style="margin:0">
+      </label>
+      <div style="flex:1"><div style="font-size:13px;color:var(--cream);${ex?'text-decoration:line-through':''}">${escapeHtml(m?m.name:'?')}</div>
+        <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--cream-mute)">${escapeHtml(m?m.instrument||m.category:'')}${ex?' · ekskluderet':''}</div></div>
+      <input type="number" class="input no-spinner" style="width:120px;text-align:right" value="${ci.share||0}" ${ex?'disabled':''}
         oninput="CALC_INDIVIDUAL[${i}].share=Number(this.value)||0;updateCalcDerived()">
       <span style="font-family:var(--font-mono);font-size:11px;color:var(--cream-mute);width:20px">kr</span>
     </div>`;
@@ -1206,7 +1216,7 @@ function drawCalc(){
       <input type="number" class="input no-spinner" id="calcTotalInput" value="${total||''}" placeholder="Indtast beløb…"
         style="flex:1;text-align:right;font-family:var(--font-mono);font-size:15px;color:var(--amber);border-color:rgba(232,168,103,.3);background:rgba(8,17,31,.4)"
         oninput="EDITING.honorar=Number(this.value)||0;const hb=document.querySelector('#cForm [data-bind=honorar]');if(hb)hb.value=EDITING.honorar;updateCalcDerived()">
-      <div style="font-family:var(--font-mono);font-size:12px;color:var(--cream-mute)">kr · ${n} pers.</div>
+      <div style="font-family:var(--font-mono);font-size:12px;color:var(--cream-mute)">kr · ${nActive}${nActive!==n?` af ${n}`:''} pers.</div>
     </div>
     <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--ink-line-soft)">
       <div style="flex:1"><div style="font-size:13px;color:var(--cream)">Provision</div>
@@ -1229,8 +1239,9 @@ function drawCalc(){
 function distributeRest(){
   const total = EDITING.honorar || 0;
   const provKr = Math.round(total * (CALC_PROVISION_PCT||0) / 100);
-  const fyldt = CALC_INDIVIDUAL.filter(x => (x.share||0) > 0);
-  const tomme = CALC_INDIVIDUAL.filter(x => !((x.share||0) > 0));
+  const aktive = CALC_INDIVIDUAL.filter(x => !x.excluded);
+  const fyldt = aktive.filter(x => (x.share||0) > 0);
+  const tomme = aktive.filter(x => !((x.share||0) > 0));
   const rest = total - provKr - fyldt.reduce((s,x)=>s+(x.share||0),0);
   if (tomme.length === 0){ toast('Ingen tomme felter at fordele til','err'); return; }
   if (rest <= 0){ toast('Intet rest at fordele','err'); return; }
@@ -1243,9 +1254,9 @@ function distributeRest(){
 function updateCalcDerived(){
   const total = EDITING.honorar || 0;
   const provKr = Math.round(total * (CALC_PROVISION_PCT||0) / 100);
-  const sumInd = CALC_INDIVIDUAL.reduce((s,x)=>s+(x.share||0),0);
+  const sumInd = CALC_INDIVIDUAL.filter(x=>!x.excluded).reduce((s,x)=>s+(x.share||0),0);
   const rest = total - provKr - sumInd;
-  const tomCount = CALC_INDIVIDUAL.filter(x => !((x.share||0) > 0)).length;
+  const tomCount = CALC_INDIVIDUAL.filter(x => !x.excluded && !((x.share||0) > 0)).length;
   const provEl = document.querySelector('#honorarCalcBody .calc-prov-kr');
   if (provEl) provEl.textContent = provKr.toLocaleString('da-DK');
   const sumEl = document.getElementById('calcSumLine');
@@ -1258,7 +1269,7 @@ function updateCalcDerived(){
 function applyHonorarCalc(){
   EDITING_ATTENDEES.forEach(a => {
     const ci = CALC_INDIVIDUAL.find(x=>x.memberId===a.memberId);
-    if (ci) a.share = ci.share || 0;
+    if (ci) a.share = ci.excluded ? 0 : (ci.share || 0);
   });
   closeHonorarCalc();
   drawForm(); drawPreview();
@@ -1937,11 +1948,11 @@ async function renderMyHonorar(){
       <div class="row-3">
         <div class="field"><label>Fra</label><input id="hFra" class="input" type="date" value="${yearStart.toISOString().slice(0,10)}"></div>
         <div class="field"><label>Til</label><input id="hTil" class="input" type="date" value="${today.toISOString().slice(0,10)}"></div>
-        <div class="field" style="justify-content:flex-end;display:flex"><button class="btn btn-primary" onclick="loadHonorar()" style="margin-top:auto">Forhåndsvis</button></div>
+        <div class="field" style="justify-content:flex-end;display:flex"><button class="btn btn-primary" onclick="loadHonorar()" style="margin-top:auto">Søg</button></div>
       </div>
     </div>
     <div id="hStats" class="grid-4" style="margin-bottom:14px"></div>
-    <div class="card" style="padding:0;overflow:hidden"><div id="hRows" class="muted" style="padding:24px">Tryk forhåndsvis...</div></div>
+    <div class="card" style="padding:0;overflow:hidden"><div id="hRows" class="muted" style="padding:24px">Tryk søg for at hente jobs i perioden...</div></div>
   `;
 }
 
@@ -1963,7 +1974,8 @@ async function loadHonorar(){
     // Gem data så download-knappen kan bruge dem
     window._lastHonorar = { rows: d.rows, total: d.total, member: d.member, fra, til };
     document.getElementById('hRows').innerHTML = `
-      <div style="padding:14px 18px;border-bottom:1px solid var(--ink-line);display:flex;justify-content:flex-end">
+      <div style="padding:14px 18px;border-bottom:1px solid var(--ink-line);display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn btn-ghost btn-sm" onclick="memberPreviewHonorar()">👁 Forhåndsvis</button>
         <button class="btn btn-primary btn-sm" onclick="memberDownloadHonorar()">↓ Download PDF</button>
       </div>
       <table class="table">
@@ -2026,6 +2038,21 @@ function openPrintWindow(title, bodyHtml){
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
+// Som openPrintWindow, men UDEN auto-print + tilføjer en navy bar med Print/Gem-knap.
+function openPreviewWindow(title, bodyHtml){
+  const printBar = `<div style="position:fixed;top:0;left:0;right:0;background:#0F213C;color:#fff;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;font-family:'Inter',sans-serif;font-size:13px;z-index:1000" class="no-print">
+    <span>${escapeHtml(title)} · Tryk <b>Print</b> og vælg "Gem som PDF" for at downloade</span>
+    <button onclick="window.print()" style="background:#fff;color:#0F213C;border:0;padding:8px 16px;border-radius:4px;font-weight:600;cursor:pointer">🖨 Print / Gem som PDF</button>
+  </div>`;
+  const extraStyle = `@media print{.no-print{display:none !important}}body{padding-top:60px}`;
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title}</title><style>${pdfPrintStyles()}${extraStyle}</style></head><body>${printBar}${bodyHtml}</body></html>`;
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const w = window.open(url, '_blank');
+  if (!w) toast('Popup blokeret — tillad popups for denne side og prøv igen', 'err');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 function downloadContractPDF(){
   if (!EDITING) return;
   const previewEl = document.getElementById('cPreview');
@@ -2046,7 +2073,7 @@ function downloadContractOverviewPDF(){
   openPrintWindow(`Oversigt — ${(EDITING.venue&&EDITING.venue.name)||'DMDT'}`, firstPage.outerHTML);
 }
 
-function downloadHonorarPDF(rows, total, member, fra, til){
+function _buildHonorarBody(rows, total, member, fra, til){
   const logoUrl = DMD_LOGO_B64;
   const rowsHtml = rows.map(r=>{
     const venue = r.venue || {};
@@ -2080,7 +2107,15 @@ function downloadHonorarPDF(rows, total, member, fra, til){
     </table>
     <div class="pdf-foot">Danser med Drenge Tribute · Udskrevet ${new Date().toLocaleDateString('da-DK')} · Til brug ved årsregnskab</div>
   </div>`;
-  openPrintWindow(`Honorar — ${escapeHtml(member.name)}`, body);
+  return body;
+}
+
+function downloadHonorarPDF(rows, total, member, fra, til){
+  openPrintWindow(`Honorar — ${escapeHtml(member.name)}`, _buildHonorarBody(rows, total, member, fra, til));
+}
+
+function previewHonorarPDF(rows, total, member, fra, til){
+  openPreviewWindow(`Honorar — ${escapeHtml(member.name)}`, _buildHonorarBody(rows, total, member, fra, til));
 }
 
 function _buildFakturaHtml(c, fakturaNr){
@@ -2178,8 +2213,14 @@ function downloadFakturaPDF(){
 
 function memberDownloadHonorar(){
   const h = window._lastHonorar;
-  if (!h || !h.rows.length){ toast('Ingen data — tryk Forhåndsvis først','err'); return; }
+  if (!h || !h.rows.length){ toast('Ingen data — tryk Søg først','err'); return; }
   downloadHonorarPDF(h.rows, h.total, h.member, h.fra, h.til);
+}
+
+function memberPreviewHonorar(){
+  const h = window._lastHonorar;
+  if (!h || !h.rows.length){ toast('Ingen data — tryk Søg først','err'); return; }
+  previewHonorarPDF(h.rows, h.total, h.member, h.fra, h.til);
 }
 
 function _parseTimeStr(s){
@@ -2567,7 +2608,7 @@ function uploadInvoicePdf(invoiceId, invoiceNr){
 }
 
 async function deleteInvoice(id, nr){
-  if (!confirm(`Slet faktura ${nr}?\n\nDrive-filen flyttes til papirkurv. Fakturanummeret genbruges IKKE — næste nye faktura får et højere nummer (regnskabspraksis: huller i serien er OK).`)) return;
+  if (!confirm(`Slet faktura ${nr}?\n\nDrive-filen flyttes til papirkurv og fakturanummeret frigives — næste nye faktura genbruger det første ledige nummer.`)) return;
   try {
     const d = await apiPost('deleteInvoice', { id: id });
     if (!d.ok){ toast(d.error||'Fejl','err'); return; }
