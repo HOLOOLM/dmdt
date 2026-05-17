@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="da">
 <head>
 <meta charset="UTF-8">
@@ -331,7 +331,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
       <div class="nav-item" data-route="contracts"><span class="icn">◫</span> Kontrakter</div>
       <div class="nav-item" data-route="members"><span class="icn">◉</span> Medlemmer</div>
       <div class="nav-item" data-route="honorar"><span class="icn">⌗</span> Honorar</div>
-      <div class="nav-item" data-route="invoices"><span class="icn">¤</span> Fakturaer</div>
+      <div class="nav-item" data-route="invoices"><span class="icn">¤</span> Honorarafregninger</div>
     </div>
     <div class="sidebar-foot">
       <div class="nav-item" id="logoutAdmin"><span class="icn">←</span> Log ud</div>
@@ -343,7 +343,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
     <div class="mn-item" data-route="contracts"><span class="mn-icn">◫</span>Kontrakter</div>
     <div class="mn-item" data-route="members"><span class="mn-icn">◉</span>Medlemmer</div>
     <div class="mn-item" data-route="honorar"><span class="mn-icn">⌗</span>Honorar</div>
-    <div class="mn-item" data-route="invoices"><span class="mn-icn">¤</span>Fakturaer</div>
+    <div class="mn-item" data-route="invoices"><span class="mn-icn">¤</span>Honorarafregninger</div>
   </nav>
 </div>
 
@@ -407,14 +407,35 @@ document.querySelectorAll('img.dmdt-logo').forEach(function(el){el.src=DMD_LOGO_
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxQlGk_6d2eGzeLwgkzZdL9OBd5HmQNNNIQiLxuZwk6XN3TX2J8QHh6T_RSGrl38wPn/exec';
 
 // State
-let SESSION = null; // { token, email, role, member }
-let PENDING_LOGIN_HASH = null; // only held during forced password change
+let SESSION = null; // { email, hash, role, member }
 let CACHE = { members: null, contracts: null, dashboard: null, invoices: null, _stamp: {} };
 const CACHE_TTL_MS = 45 * 1000;
 const CACHE_TTL_PER_KEY = { dashboard: 90 * 1000, invoices: 90 * 1000 };
 function cacheFresh(key){ const t = CACHE._stamp[key]; return t && (Date.now() - t) < (CACHE_TTL_PER_KEY[key] || CACHE_TTL_MS); }
 function cacheTouch(key){ CACHE._stamp[key] = Date.now(); }
 function cacheBust(key){ delete CACHE._stamp[key]; if (key in CACHE) CACHE[key] = null; }
+
+/**
+ * Cross-tab cache-invalidering via BroadcastChannel.
+ * Når én tab gemmer noget, lytter andre tabs og buster deres cache + re-render
+ * hvis de står på den relevante side. Gratis, ingen Apps Script-quota.
+ */
+const _bc = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('dmdt') : null;
+function broadcastInvalidate(keys){
+  if (!_bc) return;
+  try { _bc.postMessage({ type: 'invalidate', keys: keys, ts: Date.now() }); } catch(e){}
+}
+if (_bc){
+  _bc.onmessage = (ev)=>{
+    if (!ev.data || ev.data.type !== 'invalidate') return;
+    (ev.data.keys||[]).forEach(k => cacheBust(k));
+    // Re-render hvis vi står på en side der bruger den invaliderede cache
+    if (ev.data.keys.includes('contracts') && ADMIN_ROUTE === 'contracts') renderContractsList();
+    if (ev.data.keys.includes('dashboard') && ADMIN_ROUTE === 'dashboard') renderDashboard();
+    if (ev.data.keys.includes('members') && ADMIN_ROUTE === 'members') renderMembers();
+    if (ev.data.keys.includes('invoices') && ADMIN_ROUTE === 'invoices') renderInvoicesList();
+  };
+}
 
 // Pre-warm common admin data lige efter login så side-skift føles hurtigere.
 // Fire-and-forget; fejl ignoreres (de viser sig når brugeren navigerer derhen).
@@ -433,39 +454,41 @@ async function sha256hex(str){
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 
-function jsonp(params){
-  return new Promise((resolve, reject)=>{
-    const name = '_cb'+Date.now()+'_'+Math.floor(Math.random()*1e6);
-    const s = document.createElement('script');
-    let timer;
-    const cleanup = ()=>{ clearTimeout(timer); delete window[name]; if(s.parentNode) s.parentNode.removeChild(s); };
-    window[name] = (d)=>{ cleanup(); resolve(d); };
-    timer = setTimeout(()=>{ cleanup(); reject(new Error('Timeout')); }, 20000);
-    s.onerror = ()=>{ cleanup(); reject(new Error('Netværksfejl')); };
-    const qs = Object.keys(params).map(k => encodeURIComponent(k)+'='+encodeURIComponent(params[k])).join('&');
-    s.src = SCRIPT_URL + '?' + qs + '&callback=' + name + '&t=' + Date.now();
-    document.head.appendChild(s);
-  });
+/**
+ * Unified API-kald via POST med text/plain (undgår CORS-preflight).
+ * Real JSON-response → ordentlig fejlhåndtering i DevTools.
+ * Erstatter den gamle JSONP-baserede apiGet.
+ */
+async function _apiCall(action, params){
+  const body = Object.assign({ action: action }, params || {});
+  if (SESSION){ body.email = SESSION.email; body.passwordHash = SESSION.hash; }
+  const ctrl = new AbortController();
+  const timeoutId = setTimeout(()=> ctrl.abort(), 30000);
+  try {
+    const res = await fetch(SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    try { return JSON.parse(text); }
+    catch(e){
+      // Apps Script returnerer HTML hvis deployment er nede eller adgang er forkert
+      throw new Error('Ugyldigt svar fra server — tjek deployment ("Adgang: Alle")');
+    }
+  } catch(e){
+    if (e.name === 'AbortError') throw new Error('Timeout — serveren svarede ikke inden 30 sek');
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
-async function apiPost(action, payload){
-  const body = Object.assign({ action: action, sessionToken: SESSION ? SESSION.token : '' }, payload || {});
-  const res = await fetch(SCRIPT_URL, {
-    method:'POST',
-    headers:{ 'Content-Type':'text/plain;charset=utf-8' }, // undgå CORS-preflight
-    body: JSON.stringify(body)
-  });
-  return res.json();
-}
-async function apiGet(action, params){
-  // Authenticated reads must NOT use JSONP because querystrings leak credentials/tokens.
-  // Use POST for all calls after login. JSONP is only kept for login/changePassword fallback.
-  if (SESSION && SESSION.token) {
-    return apiPost(action, params || {});
-  }
-  const p = Object.assign({ action: action }, params || {});
-  return jsonp(p);
-}
+const apiGet  = (action, params) => _apiCall(action, params);
+const apiPost = (action, payload) => _apiCall(action, payload);
+
 function showErr(elId, msg){
   const el = document.getElementById(elId);
   el.textContent = msg; el.classList.add('show');
@@ -481,29 +504,7 @@ function toast(msg, kind){
   setTimeout(()=>{ if(t.parentNode) t.parentNode.removeChild(t); }, 2400);
 }
 
-function escapeHtml(value){
-  return String(value == null ? '' : value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-function maskCpr(cpr){
-  if(!cpr) return '';
-  const s = String(cpr).replace(/\s+/g,'');
-  return s.length >= 4 ? '******-' + s.slice(-4) : '******';
-}
-function maskRegAccount(v){
-  if(!v) return '';
-  const s = String(v).replace(/\s+/g,'');
-  return s.length >= 4 ? '****-' + s.slice(-4) : '****';
-}
-
-function isMaskedValue(v){
-  const s = String(v || '').trim();
-  return s.includes('*') || s.includes('•');
-}
+function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function initials(name){ return String(name||'?').split(/\s+/).map(p=>p[0]).filter(Boolean).slice(0,2).join('').toUpperCase(); }
 function fmtDate(d){
   if(!d) return '—';
@@ -533,18 +534,18 @@ async function doLogin(){
   document.getElementById('loginStatus').classList.add('show');
   try {
     const hash = await sha256hex(pw);
-    const d = await jsonp({ action:'login', email: email, passwordHash: hash });
+    const d = await _apiCall('login', { email: email, passwordHash: hash });
     document.getElementById('loginStatus').classList.remove('show');
     btn.disabled = false;
     if (!d || !d.ok){ showErr('loginErr', (d && d.error) || 'Login mislykkedes.'); return; }
-    SESSION = { token: d.sessionToken, email: email, role: d.role || 'member', member: d.member };
-    PENDING_LOGIN_HASH = hash;
+    SESSION = { email: email, hash: hash, role: d.role || 'member', member: d.member };
+    _stampSessionActivity(true); // sæt loginAt + lastActivityAt
     try {
       sessionStorage.setItem('dmdt_email', email);
-      sessionStorage.setItem('dmdt_token', d.sessionToken || '');
+      sessionStorage.setItem('dmdt_hash', hash);
     } catch(e){}
     // log
-    jsonp({ action:'trackLogin', memberId: (d.member&&d.member.id)||'', email: email, ua: (navigator.userAgent||'').slice(0,200) }).catch(()=>{});
+    _apiCall('trackLogin', { memberId: (d.member&&d.member.id)||'', email: email, ua: (navigator.userAgent||'').slice(0,200) }).catch(()=>{});
     if (d.forcePasswordChange){ showChangePwView(); return; }
     enterApp();
   } catch (err){
@@ -569,10 +570,10 @@ async function doChangePassword(){
   btn.disabled = true; btn.textContent = 'Gemmer...';
   try {
     const newHash = await sha256hex(a);
-    const d = await jsonp({ action:'changePassword', email: SESSION.email, oldHash: PENDING_LOGIN_HASH || '', newHash: newHash });
+    const d = await _apiCall('changePassword', { email: SESSION.email, oldHash: SESSION.hash, newHash: newHash });
     if (!d || !d.ok){ showErr('changePwErr', (d && d.error) || 'Kunne ikke gemme.'); btn.disabled = false; btn.textContent = 'Gem'; return; }
-    if (d.sessionToken) { SESSION.token = d.sessionToken; try { sessionStorage.setItem('dmdt_token', d.sessionToken); } catch(e){} }
-    PENDING_LOGIN_HASH = null;
+    SESSION.hash = newHash;
+    try { sessionStorage.setItem('dmdt_hash', newHash); } catch(e){}
     document.getElementById('changePwView').style.display = 'none';
     enterApp();
   } catch(err){
@@ -583,7 +584,12 @@ async function doChangePassword(){
 
 function logout(){
   SESSION = null;
-  try { sessionStorage.removeItem('dmdt_email'); sessionStorage.removeItem('dmdt_token'); } catch(e){}
+  try {
+    sessionStorage.removeItem('dmdt_email');
+    sessionStorage.removeItem('dmdt_hash');
+    sessionStorage.removeItem('dmdt_loginAt');
+    sessionStorage.removeItem('dmdt_activityAt');
+  } catch(e){}
   document.getElementById('adminApp').style.display = 'none';
   document.getElementById('memberApp').style.display = 'none';
   document.getElementById('changePwView').style.display = 'none';
@@ -591,6 +597,63 @@ function logout(){
   document.getElementById('emailInput').value = '';
   document.getElementById('passwordInput').value = '';
 }
+
+// ─── Session timeout ─────────────────────────────────────────────
+// 8t hard limit (siden login) + 30 min idle (siden sidste aktivitet)
+const SESSION_HARD_MAX_MS = 8 * 60 * 60 * 1000;
+const SESSION_IDLE_MAX_MS = 30 * 60 * 1000;
+
+function _stampSessionActivity(includeLogin){
+  const now = Date.now();
+  try {
+    if (includeLogin) sessionStorage.setItem('dmdt_loginAt', String(now));
+    sessionStorage.setItem('dmdt_activityAt', String(now));
+  } catch(e){}
+}
+
+function _restoreSessionTimestamps(){
+  try {
+    const loginAt = Number(sessionStorage.getItem('dmdt_loginAt') || 0);
+    const activityAt = Number(sessionStorage.getItem('dmdt_activityAt') || 0);
+    if (!loginAt || !activityAt) {
+      // Ingen timestamps gemt — sæt nye så genoplivede sessions stadig timer ud
+      _stampSessionActivity(true);
+      return true;
+    }
+    const now = Date.now();
+    if (now - loginAt > SESSION_HARD_MAX_MS) return false;
+    if (now - activityAt > SESSION_IDLE_MAX_MS) return false;
+    return true;
+  } catch(e){ return true; }
+}
+
+function _checkSessionExpired(){
+  if (!SESSION) return false;
+  try {
+    const loginAt = Number(sessionStorage.getItem('dmdt_loginAt') || 0);
+    const activityAt = Number(sessionStorage.getItem('dmdt_activityAt') || 0);
+    const now = Date.now();
+    if (loginAt && now - loginAt > SESSION_HARD_MAX_MS){
+      toast('Session udløbet (8 timer) — log venligst ind igen', 'err');
+      logout();
+      return true;
+    }
+    if (activityAt && now - activityAt > SESSION_IDLE_MAX_MS){
+      toast('Inaktiv i 30 min — log venligst ind igen', 'err');
+      logout();
+      return true;
+    }
+  } catch(e){}
+  return false;
+}
+
+// Tjek timeout hvert minut + ved focus/visibility-skift
+setInterval(_checkSessionExpired, 60 * 1000);
+document.addEventListener('visibilitychange', ()=>{ if (!document.hidden) _checkSessionExpired(); });
+// Opdatér aktivitets-tidsstempel ved brugerinteraktion
+['click','keydown'].forEach(ev =>
+  document.addEventListener(ev, ()=>{ if (SESSION) _stampSessionActivity(false); }, { passive: true })
+);
 
 function enterApp(){
   document.getElementById('loginView').style.display = 'none';
@@ -612,15 +675,15 @@ function enterApp(){
 async function tryRestore(){
   try {
     const email = sessionStorage.getItem('dmdt_email');
-    const token = sessionStorage.getItem('dmdt_token');
-    if (!email || !token) return;
-    const d = await fetch(SCRIPT_URL, {
-      method:'POST',
-      headers:{ 'Content-Type':'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action:'validateSession', sessionToken: token })
-    }).then(r => r.json());
+    const hash = sessionStorage.getItem('dmdt_hash');
+    if (!email || !hash) return;
+    const d = await _apiCall('login', { email: email, passwordHash: hash });
     if (d && d.ok){
-      SESSION = { token: token, email: email, role: d.role, member: d.member };
+      SESSION = { email: email, hash: hash, role: d.role, member: d.member };
+      // Tjek om gemte timestamps stadig er gyldige; ellers tving fresh login
+      const restored = _restoreSessionTimestamps();
+      if (!restored){ logout(); return; }
+      if (d.forcePasswordChange){ showChangePwView(); return; }
       enterApp();
     }
   } catch(e){}
@@ -634,7 +697,8 @@ let ADMIN_STATE = {
   contractFilter: 'alle', contractSearch: '', memberFilter: 'alle',
   contractType: 'alle', contractFra: '', contractTil: '',
   contractArrangoer: '', contractHonorarMin: '', contractHonorarMax: '',
-  contractSort: 'date_desc'
+  contractSort: 'date_desc',
+  contractTimeframe: 'kommende'
 };
 
 function setAdminRoute(route, params){
@@ -669,14 +733,14 @@ async function renderDashboard(){
           <div class="eyebrow warm">Næste op</div>
           <h2 class="serif" style="margin:6px 0 0;font-weight:400;font-size:24px">Kommende jobs</h2>
         </div>
-        <div id="dashUpcoming" class="muted">Henter...</div>
+        <div id="dashUpcoming" class="muted"><span class="spinner"></span>Henter...</div>
       </div>
       <div class="card">
         <div style="margin-bottom:14px">
           <div class="eyebrow warm">Oversigt</div>
           <h2 class="serif" style="margin:6px 0 0;font-weight:400;font-size:24px">Arrangører</h2>
         </div>
-        <div id="dashArrangoere" class="muted">Henter...</div>
+        <div id="dashArrangoere" class="muted"><span class="spinner"></span>Henter...</div>
       </div>
     </div>
   `;
@@ -825,6 +889,9 @@ async function renderContractsList(){
 
     <!-- Status pills -->
     <div class="filter-bar" style="margin-bottom:10px">
+      <div class="filter-pill" id="contractTimeframeFilter">
+        ${[['kommende','Kommende'],['tidligere','Arkiv'],['alle','Alle']].map(([f,label])=>`<button data-tf="${f}" class="${s.contractTimeframe===f?'on':''}">${label}</button>`).join('')}
+      </div>
       <div class="filter-pill" id="contractFilter">
         ${['alle','udkast','afventer','godkendt'].map(f=>`<button data-f="${f}" class="${s.contractFilter===f?'on':''}">${f==='alle'?'Alle statuser':f.charAt(0).toUpperCase()+f.slice(1)}</button>`).join('')}
       </div>
@@ -845,10 +912,13 @@ async function renderContractsList(){
     </div>
 
     <div class="card" style="padding:0;overflow:hidden">
-      <div id="contractsTable" class="muted" style="padding:24px">Henter...</div>
+      <div id="contractsTable" class="muted" style="padding:24px"><span class="spinner"></span>Henter...</div>
     </div>
   `;
 
+  document.querySelectorAll('#contractTimeframeFilter button').forEach(b=>{
+    b.onclick = ()=>{ ADMIN_STATE.contractTimeframe = b.getAttribute('data-tf'); drawContractsTable(); };
+  });
   document.querySelectorAll('#contractFilter button').forEach(b=>{
     b.onclick = ()=>{ ADMIN_STATE.contractFilter = b.getAttribute('data-f'); drawContractsTable(); };
   });
@@ -880,6 +950,7 @@ async function renderContractsList(){
 }
 
 function clearContractFilters(){
+  ADMIN_STATE.contractTimeframe = 'kommende';
   ADMIN_STATE.contractFilter   = 'alle';
   ADMIN_STATE.contractType     = 'alle';
   ADMIN_STATE.contractSearch   = '';
@@ -909,6 +980,16 @@ function drawContractsTable(){
   const s = ADMIN_STATE;
   let rows = CACHE.contracts.slice();
 
+  // Timeframe filter: kommende (>=today eller uden dato) / tidligere (<today) / alle
+  if (s.contractTimeframe !== 'alle'){
+    const today = new Date(); today.setHours(0,0,0,0);
+    rows = rows.filter(c => {
+      if (!c.date) return s.contractTimeframe === 'kommende';
+      const d = new Date(c.date); d.setHours(0,0,0,0);
+      return s.contractTimeframe === 'kommende' ? d >= today : d < today;
+    });
+  }
+
   if (s.contractFilter !== 'alle')
     rows = rows.filter(c => c.status === s.contractFilter);
   if (s.contractType !== 'alle')
@@ -931,6 +1012,8 @@ function drawContractsTable(){
   rows.sort((a,b)=> new Date(b.date||0) - new Date(a.date||0));
 
   // update filter pills to reflect current state
+  document.querySelectorAll('#contractTimeframeFilter button').forEach(b=>
+    b.classList.toggle('on', b.getAttribute('data-tf') === s.contractTimeframe));
   document.querySelectorAll('#contractFilter button').forEach(b=>
     b.classList.toggle('on', b.getAttribute('data-f') === s.contractFilter));
   document.querySelectorAll('#contractTypeFilter button').forEach(b=>
@@ -972,7 +1055,7 @@ let EDITING_ATTENDEES = []; // [{memberId, share}]
 
 async function renderContractEditor(id){
   const main = document.getElementById('adminMain');
-  main.innerHTML = '<div class="muted">Henter kontrakt...</div>';
+  main.innerHTML = '<div class="muted"><span class="spinner"></span>Henter kontrakt...</div>';
   // Load members for attendee picker
   if (!CACHE.members || !cacheFresh('members')){
     try { const d = await apiGet('getMembers'); if (d.ok){ CACHE.members = d.members; cacheTouch('members'); } }
@@ -988,6 +1071,7 @@ async function renderContractEditor(id){
       if (!d.ok){ toast(d.error,'err'); setAdminRoute('contracts'); return; }
       EDITING = d.contract;
       EDITING._originalId = d.contract.id;
+      EDITING._loadedAt = d.contract.updatedAt || ''; // til conflict detection ved save
       EDITING_ATTENDEES = (d.attendees || []).map(a => ({ memberId: a.memberId, share: Number(a.share)||0 }));
       drawContractEditor();
     } catch(e){ toast(e.message,'err'); }
@@ -1019,7 +1103,7 @@ function drawContractEditor(){
         ${isNew ? '' : '<button class="btn btn-ghost" onclick="copyContract()">Kopier</button>'}
         ${isNew ? '' : '<button class="btn btn-ghost btn-sm" onclick="downloadContractPDF()">↓ PDF med Rider</button>'}
         ${isNew ? '' : '<button class="btn btn-ghost btn-sm" onclick="downloadContractOverviewPDF()">↓ PDF uden Rider</button>'}
-        ${isNew ? '' : '<button class="btn btn-ghost btn-sm" onclick="downloadFakturaPDF()">↓ Faktura</button>'}
+        ${isNew ? '' : '<button class="btn btn-ghost btn-sm" onclick="downloadFakturaPDF()">↓ Honorarafregning</button>'}
         ${isNew ? '' : '<button class="btn btn-danger btn-sm" onclick="deleteContract()">Slet</button>'}
         <button class="btn btn-primary" onclick="saveContract()">Gem</button>
       </div>
@@ -1113,16 +1197,7 @@ function drawForm(){
         <div class="field"><label>Sæt-længde (min)</label><input class="input" type="number" data-bind="setMinutes" value="${c.setMinutes}"></div>
       </div>
     `) +
-    sec('05', 'Besætning', `
-      <div class="row-3">
-        <div class="field"><label>Antal musikere</label><input class="input" type="number" data-bind="musicianCount" value="${c.musicianCount}"></div>
-        <div class="field"><label>Antal crew</label><input class="input" type="number" data-bind="crewCount" value="${c.crewCount}"></div>
-        <div class="field"><label>Gæsteliste (max 10)</label><input class="input" type="number" data-bind="guestCount" value="${c.guestCount}"></div>
-      </div>
-      <div class="eyebrow" style="margin-top:6px">Vælg medlemmer på dette job</div>
-      <div class="attendees-grid" id="attendeesGrid">${renderAttendeesPicker()}</div>
-    `) +
-    sec('06', 'Honorar', `
+    sec('05', 'Honorar', `
       <div class="row-2">
         <div class="field"><label>Total honorar (kr)</label><div style="display:flex;gap:8px"><input class="input" type="number" data-bind="honorar" value="${c.honorar}" style="flex:1"><button class="btn btn-ghost" type="button" onclick="openHonorarCalc()" title="Fordel honorar" style="padding:10px 13px;font-size:17px;flex-shrink:0">🧮</button></div></div>
         <div class="field"><label>Betalingsbetingelse</label>
@@ -1141,6 +1216,15 @@ function drawForm(){
       </div>
       <button class="btn btn-ghost btn-sm" id="autoDistBtn" type="button" style="margin-bottom:10px">⟳ Auto-fordel honorar på besætning</button>
       <div class="field"><label>Noter</label><textarea class="textarea" data-bind="notes">${escapeHtml(c.notes)}</textarea></div>
+    `) +
+    sec('06', 'Besætning', `
+      <div class="row-3">
+        <div class="field"><label>Antal musikere</label><input class="input" type="number" data-bind="musicianCount" value="${c.musicianCount}"></div>
+        <div class="field"><label>Antal crew</label><input class="input" type="number" data-bind="crewCount" value="${c.crewCount}"></div>
+        <div class="field"><label>Gæsteliste (max 10)</label><input class="input" type="number" data-bind="guestCount" value="${c.guestCount}"></div>
+      </div>
+      <div class="eyebrow" style="margin-top:6px">Vælg medlemmer på dette job</div>
+      <div class="attendees-grid" id="attendeesGrid">${renderAttendeesPicker()}</div>
     `);
 
   // Bind type pill
@@ -1197,7 +1281,7 @@ let CALC_INDIVIDUAL = [];
 let CALC_PROVISION_PCT = 20;
 
 function openHonorarCalc(){
-  if (!EDITING_ATTENDEES.length){ toast('Vælg besætning i sektion 05 først','err'); return; }
+  if (!EDITING_ATTENDEES.length){ toast('Vælg besætning i sektion 06 først','err'); return; }
   // Filtrér slettede medlemmer fra (de findes ikke længere i CACHE.members og ville ellers vises som "?")
   const known = new Set((CACHE.members||[]).map(m => m.id));
   const validAttendees = EDITING_ATTENDEES.filter(a => known.has(a.memberId));
@@ -1322,7 +1406,7 @@ function autoDistributeHonorar(){
 
 async function retryLoadMembers(){
   const grid = document.getElementById('attendeesGrid');
-  if (grid) grid.innerHTML = '<div class="muted">Henter medlemmer...</div>';
+  if (grid) grid.innerHTML = '<div class="muted"><span class="spinner"></span>Henter medlemmer...</div>';
   try {
     const d = await apiGet('getMembers');
     if (d.ok){ CACHE.members = d.members; if (grid) grid.innerHTML = renderAttendeesPicker(); }
@@ -1660,12 +1744,22 @@ async function saveContract(){
   try {
     const payload = { contract: EDITING, attendees: EDITING_ATTENDEES };
     if (EDITING._originalId) payload.originalId = EDITING._originalId;
+    // Conflict detection: send den updatedAt vi så da kontrakten blev indlæst.
+    // Backend afviser hvis serveren har en nyere version (en anden admin har gemt imens).
+    if (EDITING._loadedAt) payload.expectedUpdatedAt = EDITING._loadedAt;
     const d = await apiPost('saveContract', payload);
+    if (d && d.conflict){
+      if (confirm((d.error||'Konflikt') + '\n\nVil du genindlæse for at se den nyeste version?')){
+        setAdminRoute('contractEdit', { id: EDITING.id });
+      }
+      return;
+    }
     if (!d.ok){ toast(d.error,'err'); return; }
     toast('Gemt');
     EDITING.id = d.id;
     EDITING._originalId = d.id;
-    cacheBust('contracts'); cacheBust('dashboard');
+    cacheBust('contracts'); cacheBust('dashboard'); broadcastInvalidate(['contracts','dashboard']);
+    broadcastInvalidate(['contracts','dashboard']);
     setAdminRoute('contractEdit', { id: d.id });
   } catch(e){ toast(e.message,'err'); }
   finally {
@@ -1680,7 +1774,7 @@ async function deleteContract(){
     const d = await apiPost('deleteContract', { id: EDITING.id });
     if (!d.ok){ toast(d.error,'err'); return; }
     toast('Slettet');
-    cacheBust('contracts'); cacheBust('dashboard');
+    cacheBust('contracts'); cacheBust('dashboard'); broadcastInvalidate(['contracts','dashboard']);
     setAdminRoute('contracts');
   } catch(e){ toast(e.message,'err'); }
 }
@@ -1710,7 +1804,7 @@ async function renderMembers(){
         ${['alle','Musiker','Afløser','Crew'].map(f=>`<button data-f="${f}" class="${ADMIN_STATE.memberFilter===f?'on':''}">${f==='alle'?'Alle':f}</button>`).join('')}
       </div>
     </div>
-    <div id="membersGrid" class="muted">Henter...</div>
+    <div id="membersGrid" class="muted"><span class="spinner"></span>Henter...</div>
   `;
   document.querySelectorAll('#memberFilter button').forEach(b=>{
     b.onclick = ()=>{ ADMIN_STATE.memberFilter = b.getAttribute('data-f'); drawMembersGrid(); };
@@ -1774,28 +1868,7 @@ function openMemberDrawer(id){
         <div class="field"><label>Email</label><input id="md_email" class="input" type="email" value="${escapeHtml((m&&m.email)||'')}">
           ${m?`<div class="muted" style="font-size:11px;margin-top:3px">Bruges til login — ændring træder i kraft ved næste login.</div>`:''}</div>
       </div>
-      <div class="row-2">
-        <div class="field">
-          <label>Reg. + konto</label>
-          <div style="display:flex;gap:8px">
-            <input id="md_regAccount" class="input" value="" placeholder="${m && m.hasRegAccount ? 'Reg./konto er registreret — skriv kun hvis det skal ændres' : '1234-5678901234'}">
-            ${m && m.hasRegAccount ? `<button type="button" class="btn btn-ghost btn-sm" onclick="revealMemberRegAccount('${escapeHtml(m.id)}')">Vis</button>` : ''}
-          </div>
-          <div class="muted" style="font-size:11px;margin-top:3px">
-            ${m && m.hasRegAccount ? `Reg./konto registreret${m.regAccountMasked ? ': ' + escapeHtml(m.regAccountMasked) : ''}` : 'Reg./konto ikke registreret'}
-          </div>
-        </div>
-        <div class="field">
-          <label>CPR</label>
-          <div style="display:flex;gap:8px">
-            <input id="md_cpr" class="input" value="" placeholder="${m && m.hasCpr ? 'CPR er registreret — skriv kun hvis det skal ændres' : 'DDMMÅÅ-XXXX'}">
-            ${m && m.hasCpr ? `<button type="button" class="btn btn-ghost btn-sm" onclick="revealMemberCpr('${escapeHtml(m.id)}')">Vis</button>` : ''}
-          </div>
-          <div class="muted" style="font-size:11px;margin-top:3px">
-            ${m && m.hasCpr ? `CPR registreret${m.cprMasked ? ': ' + escapeHtml(m.cprMasked) : ''}` : 'CPR ikke registreret'}
-          </div>
-        </div>
-      </div>
+      <div class="field"><label>Reg. + konto</label><input id="md_regAccount" class="input" value="${escapeHtml((m&&m.regAccount)||'')}" placeholder="1234-5678901234"></div>
       ${m ? `<div class="card" style="padding:14px;margin-top:6px">
         <div class="eyebrow" style="margin-bottom:6px">Adgangskode</div>
         <div class="muted" style="font-size:13px;margin-bottom:10px">Nulstil til <code class="mono">dmdt2026</code> — medlemmet bliver tvunget til at vælge en ny ved næste login.</div>
@@ -1811,26 +1884,6 @@ function openMemberDrawer(id){
   document.getElementById('drawerBackdrop').classList.add('show');
 }
 
-async function revealMemberCpr(memberId){
-  if (!memberId) return;
-  if (!confirm('Vis CPR for dette medlem?')) return;
-  try {
-    const d = await apiPost('revealMemberSensitiveField', { memberId: memberId, field: 'cpr' });
-    if (!d || !d.ok){ toast((d && d.error) || 'Kunne ikke hente CPR', 'err'); return; }
-    alert('CPR: ' + (d.value || 'Ikke registreret'));
-  } catch(e){ toast(e.message || String(e), 'err'); }
-}
-
-async function revealMemberRegAccount(memberId){
-  if (!memberId) return;
-  if (!confirm('Vis registrerings- og kontonummer for dette medlem?')) return;
-  try {
-    const d = await apiPost('revealMemberSensitiveField', { memberId: memberId, field: 'regAccount' });
-    if (!d || !d.ok){ toast((d && d.error) || 'Kunne ikke hente reg./konto', 'err'); return; }
-    alert('Reg./konto: ' + (d.value || 'Ikke registreret'));
-  } catch(e){ toast(e.message || String(e), 'err'); }
-}
-
 function closeDrawer(){
   document.getElementById('drawer').classList.remove('show');
   document.getElementById('drawerBackdrop').classList.remove('show');
@@ -1844,33 +1897,15 @@ async function saveMember(id){
     role: document.getElementById('md_role').value,
     instrument: document.getElementById('md_instrument').value.trim(),
     phone: document.getElementById('md_phone').value.trim(),
-    email: document.getElementById('md_email').value.trim()
+    email: document.getElementById('md_email').value.trim(),
+    regAccount: document.getElementById('md_regAccount').value.trim()
   };
-
-  const regAccountInput = document.getElementById('md_regAccount').value.trim();
-  if (regAccountInput) {
-    if (isMaskedValue(regAccountInput)) {
-      toast('Reg./konto-feltet indeholder en maskeret værdi og bliver ikke gemt. Skriv hele reg./konto hvis det skal ændres.', 'err');
-      return;
-    }
-    member.regAccount = regAccountInput;
-  }
-
-  const cprInput = document.getElementById('md_cpr').value.trim();
-  if (cprInput) {
-    if (isMaskedValue(cprInput)) {
-      toast('CPR-feltet indeholder en maskeret værdi og bliver ikke gemt. Skriv hele CPR-nummeret hvis det skal ændres.', 'err');
-      return;
-    }
-    member.cpr = cprInput;
-  }
-
   if (!member.name || !member.email){ toast('Navn og email er påkrævet','err'); return; }
   try {
     const d = await apiPost('saveMember', { member: member });
     if (!d.ok){ toast(d.error,'err'); return; }
     toast(id ? 'Opdateret' : 'Oprettet — initial password: dmdt2026');
-    cacheBust('members'); cacheBust('dashboard');
+    cacheBust('members'); cacheBust('dashboard'); broadcastInvalidate(['members','dashboard']);
     closeDrawer();
     renderMembers();
   } catch(e){ toast(e.message,'err'); }
@@ -1882,7 +1917,7 @@ async function deleteMember(id){
     const d = await apiPost('deleteMember', { id: id });
     if (!d.ok){ toast(d.error,'err'); return; }
     toast('Slettet');
-    cacheBust('members'); cacheBust('dashboard');
+    cacheBust('members'); cacheBust('dashboard'); broadcastInvalidate(['members','dashboard']);
     closeDrawer();
     renderMembers();
   } catch(e){ toast(e.message,'err'); }
@@ -1915,13 +1950,15 @@ function setMemberView(v, params){
 
 async function renderMyJobs(){
   const main = document.getElementById('memberMain');
-  main.innerHTML = '<div class="muted">Henter...</div>';
+  main.innerHTML = '<div class="muted"><span class="spinner"></span>Henter...</div>';
   try {
     const d = await apiGet('getJobs');
     const mainEl = document.getElementById('memberMain');
     if (!mainEl) return; // navigerede væk
     if (!d.ok){ toast(d.error,'err'); return; }
     const jobs = d.jobs || [];
+    const homeAddr = (d.member && d.member.address) || (SESSION.member && SESSION.member.address) || '';
+    if (SESSION.member) SESSION.member.address = homeAddr;
     mainEl.innerHTML = `
       <div class="page-head">
         <div>
@@ -1929,16 +1966,165 @@ async function renderMyJobs(){
           <div class="lede">Gi´ gas — nyd jobbet</div>
         </div>
       </div>
+      ${homeAddressCardHtml(homeAddr)}
       ${jobs.length === 0 ? '<div class="card"><div class="empty">Ingen jobs endnu.</div></div>' : jobs.map(j => jobCardHtml(j)).join('')}
     `;
     bindJobCards(jobs);
+    bindHomeAddressCard();
   } catch(e){ toast(e.message,'err'); }
+}
+
+function homeAddressCardHtml(addr){
+  return `
+    <div class="card" style="margin-bottom:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div class="eyebrow warm" style="margin-bottom:4px">Min hjemmeadresse</div>
+        <input id="memberHomeAddr" class="input" placeholder="fx Frejasvej 65, 6840 Oksbøl" value="${escapeHtml(addr||'')}">
+        <div class="muted" style="font-size:11px;margin-top:4px">Bruges til at beregne km til hvert spillested. Sættes som standard startadresse for alle jobs.</div>
+      </div>
+      <button class="btn btn-primary btn-sm" id="memberHomeAddrSave">Gem</button>
+    </div>`;
+}
+
+function bindHomeAddressCard(){
+  const btn = document.getElementById('memberHomeAddrSave');
+  if (!btn) return;
+  btn.onclick = async ()=>{
+    const v = document.getElementById('memberHomeAddr').value.trim();
+    btn.disabled = true; btn.textContent = 'Gemmer…';
+    try {
+      const d = await apiPost('updateMyAddress', { address: v });
+      if (!d.ok) throw new Error(d.error||'Fejl');
+      if (SESSION.member) SESSION.member.address = d.address;
+      toast('Hjemmeadresse gemt — km opdateres når jobs næste gang hentes');
+      renderMyJobs();
+    } catch(e){
+      btn.disabled = false; btn.textContent = 'Gem';
+      toast(e.message||String(e),'err');
+    }
+  };
+  attachDawaAutocomplete(document.getElementById('memberHomeAddr'));
+}
+
+/**
+ * DAWA-autocomplete for danske adresser. Gratis API, ingen API-nøgle.
+ * Viser dropdown med matchende adresser så brugeren kan vælge den rigtige
+ * (vigtigt ved flertydige vejnavne som "Grundtvigs Alle 80").
+ */
+function attachDawaAutocomplete(input){
+  if (!input || input._dawaBound) return;
+  input._dawaBound = true;
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'position:relative;flex:1;min-width:0';
+  input.parentNode.insertBefore(wrap, input);
+  wrap.appendChild(input);
+  input.setAttribute('autocomplete','off');
+  const list = document.createElement('div');
+  list.className = 'dawa-list';
+  list.style.cssText = 'position:absolute;left:0;right:0;top:100%;z-index:1000;background:#0F213C;border:1px solid var(--ink-line);border-top:0;border-radius:0 0 var(--radius) var(--radius);max-height:240px;overflow-y:auto;display:none;box-shadow:0 8px 24px rgba(0,0,0,.4)';
+  wrap.appendChild(list);
+  let activeIdx = -1;
+  let items = [];
+  let timer = null;
+  const close = ()=>{ list.style.display='none'; activeIdx=-1; };
+  const render = ()=>{
+    if (!items.length){ close(); return; }
+    list.innerHTML = items.map((it,i)=>
+      `<div class="dawa-item" data-i="${i}" style="padding:8px 12px;cursor:pointer;font-size:13px;color:var(--cream);border-bottom:1px solid var(--ink-line-soft);${i===activeIdx?'background:rgba(232,168,103,.12)':''}">${escapeHtml(it.tekst)}</div>`
+    ).join('');
+    list.style.display = 'block';
+    list.querySelectorAll('.dawa-item').forEach(el=>{
+      el.onmousedown = (e)=>{ e.preventDefault(); pick(Number(el.getAttribute('data-i'))); };
+    });
+  };
+  const pick = (i)=>{
+    if (!items[i]) return;
+    input.value = items[i].tekst;
+    input.dispatchEvent(new Event('input',{bubbles:true}));
+    input.dispatchEvent(new Event('change',{bubbles:true}));
+    close();
+  };
+  const fetchSuggest = async (q)=>{
+    if (!q || q.length < 2){ items=[]; close(); return; }
+    try {
+      // type=adresse giver fulde adresser med husnr; per_side=8 holder dropdown'en kort
+      const r = await fetch('https://api.dataforsyningen.dk/autocomplete?type=adresse&per_side=8&q='+encodeURIComponent(q));
+      if (!r.ok) return;
+      const data = await r.json();
+      items = Array.isArray(data) ? data : [];
+      activeIdx = -1;
+      render();
+    } catch(e){ /* swallow — autocomplete er nice-to-have */ }
+  };
+  input.addEventListener('input', ()=>{
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(()=>fetchSuggest(input.value.trim()), 180);
+  });
+  input.addEventListener('keydown', (e)=>{
+    if (list.style.display === 'none') return;
+    if (e.key === 'ArrowDown'){ e.preventDefault(); activeIdx = Math.min(activeIdx+1, items.length-1); render(); }
+    else if (e.key === 'ArrowUp'){ e.preventDefault(); activeIdx = Math.max(activeIdx-1, 0); render(); }
+    else if (e.key === 'Enter' && activeIdx >= 0){ e.preventDefault(); pick(activeIdx); }
+    else if (e.key === 'Escape'){ close(); }
+  });
+  input.addEventListener('blur', ()=> setTimeout(close, 150));
+}
+
+function _kmLabel(km){
+  if (km === '' || km == null || isNaN(km)) return '';
+  return Number(km).toLocaleString('da-DK', { maximumFractionDigits: 1 }) + ' km';
+}
+
+function _venueMapIframe(venue, origin){
+  if (!venue) return '';
+  const dest = [venue.address, [venue.postnr, venue.city].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  if (!dest) return '';
+  const destEnc = encodeURIComponent(dest);
+  const originStr = (origin||'').trim();
+  // Vis rute hvis vi har en start-adresse, ellers blot pin på spillestedet
+  const src = originStr
+    ? `https://www.google.com/maps?saddr=${encodeURIComponent(originStr)}&daddr=${destEnc}&output=embed`
+    : `https://www.google.com/maps?q=${destEnc}&output=embed`;
+  const openUrl = originStr
+    ? `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(originStr)}&destination=${destEnc}`
+    : `https://www.google.com/maps?q=${destEnc}`;
+  const label = originStr ? `Rute fra ${originStr} til ${dest}` : `Kort over ${dest}`;
+  return `<div id="jobMapWrap" style="border-radius:var(--radius);overflow:hidden;border:1px solid var(--ink-line);margin-top:6px">
+    <iframe id="jobMapIframe"
+      src="${src}"
+      width="100%" height="280"
+      style="border:0;display:block"
+      loading="lazy"
+      referrerpolicy="no-referrer-when-downgrade"
+      title="${escapeHtml(label)}"></iframe>
+    <div style="padding:6px 10px;background:rgba(8,17,31,.4);font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--cream-mute);display:flex;justify-content:space-between;align-items:center">
+      <span>${originStr ? 'Rute fra start til spillested' : 'Sæt startadresse for at se rute'}</span>
+      <a id="jobMapOpen" href="${openUrl}" target="_blank" rel="noopener" style="color:var(--amber);text-decoration:none">↗ Åbn i Google Maps</a>
+    </div>
+  </div>`;
+}
+
+function _updateJobMap(venue, origin){
+  const iframe = document.getElementById('jobMapIframe');
+  const link = document.getElementById('jobMapOpen');
+  if (!iframe || !venue) return;
+  const dest = [venue.address, [venue.postnr, venue.city].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  if (!dest) return;
+  const destEnc = encodeURIComponent(dest);
+  const originStr = (origin||'').trim();
+  iframe.src = originStr
+    ? `https://www.google.com/maps?saddr=${encodeURIComponent(originStr)}&daddr=${destEnc}&output=embed`
+    : `https://www.google.com/maps?q=${destEnc}&output=embed`;
+  if (link) link.href = originStr
+    ? `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(originStr)}&destination=${destEnc}`
+    : `https://www.google.com/maps?q=${destEnc}`;
 }
 
 function jobCardHtml(j){
   const d = fmtDateShort(j.date);
   const venue = (j.venue && j.venue.name) || 'Uden navn';
   const city = (j.venue && j.venue.city) || '';
+  const km = _kmLabel(j.distanceKm);
   return `
     <div class="card job-card" data-att="${escapeHtml(j.attendanceId)}">
       <div class="job-date">
@@ -1949,7 +2135,7 @@ function jobCardHtml(j){
       <div class="job-info">
         <h3 class="job-venue">${escapeHtml(venue)}</h3>
         <div class="job-meta">${escapeHtml(city)} · ${escapeHtml(j.type||'')} · ${escapeHtml(j.showtimeFrom||'')}</div>
-        <div class="job-share">Din andel: ${fmtMoney(j.share)}</div>
+        <div class="job-share">Din andel: ${fmtMoney(j.share)}${km ? ` · <span style="color:var(--cream-mute);font-weight:400">↦ ${escapeHtml(km)}</span>` : ''}</div>
       </div>
     </div>`;
 }
@@ -1963,7 +2149,7 @@ function bindJobCards(jobs){
 async function renderJobDetail(attId){
   MEMBER_JOB = null;
   const main = document.getElementById('memberMain');
-  main.innerHTML = '<div class="muted">Henter...</div>';
+  main.innerHTML = '<div class="muted"><span class="spinner"></span>Henter...</div>';
   try {
     const d = await apiGet('getJob', { attendanceId: attId });
     if (!document.getElementById('memberMain')) return; // navigerede væk
@@ -2003,7 +2189,24 @@ async function renderJobDetail(attId){
       <div class="card" style="margin-bottom:14px">
         <div class="eyebrow warm">Adresse</div>
         <div class="serif" style="font-size:20px;margin:6px 0">${escapeHtml((c.venue&&c.venue.address)||'—')}</div>
-        <div class="muted">${escapeHtml((c.venue&&c.venue.postnr)||'')} ${escapeHtml((c.venue&&c.venue.city)||'')}</div>
+        <div class="muted" style="margin-bottom:10px">${escapeHtml((c.venue&&c.venue.postnr)||'')} ${escapeHtml((c.venue&&c.venue.city)||'')}</div>
+        ${_venueMapIframe(c.venue, j.startAddress || j.homeAddress || (SESSION.member && SESSION.member.address) || '')}
+      </div>
+      <div class="card" style="margin-bottom:14px">
+        <div class="eyebrow warm">Kørsel</div>
+        <div style="display:flex;align-items:center;gap:12px;margin:6px 0;flex-wrap:wrap">
+          <div class="serif" id="jobKmDisplay" style="font-size:20px;color:var(--amber);min-width:80px">${_kmLabel(j.distanceKm) || '—'}</div>
+          <button class="btn btn-ghost btn-sm" id="jobKmRecalc" type="button">↻ ${j.distanceKm ? 'Re-beregn' : 'Beregn km'}</button>
+          <div class="muted" style="font-size:12px;flex:1;min-width:150px">fra <span id="jobKmOrigin">${escapeHtml(j.distanceOrigin || j.startAddress || j.homeAddress || 'din hjemmeadresse')}</span></div>
+        </div>
+        <div class="field" style="margin-top:10px">
+          <label>Alternativ startadresse (valgfri)</label>
+          <div style="display:flex;gap:8px">
+            <input id="jobStartAddr" class="input" placeholder="Lad være tom for at bruge din hjemmeadresse" value="${escapeHtml(j.startAddress||'')}" style="flex:1">
+            <button class="btn btn-ghost btn-sm" id="jobStartAddrSave">Gem</button>
+          </div>
+          <div class="muted" style="font-size:11px;margin-top:4px">Brug hvis du kører fra et andet sted end hjemme den dag. Tryk derefter "Beregn km" ovenfor.</div>
+        </div>
       </div>
       <div class="card" style="margin-bottom:14px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -2015,6 +2218,46 @@ async function renderJobDetail(attId){
         </div>
       </div>
     `;
+    const saveBtn = document.getElementById('jobStartAddrSave');
+    if (saveBtn) saveBtn.onclick = async ()=>{
+      const v = document.getElementById('jobStartAddr').value.trim();
+      saveBtn.disabled = true; saveBtn.textContent = 'Gemmer…';
+      try {
+        const r = await apiPost('updateJobStartAddress', { attendanceId: MEMBER_JOB.attendanceId, startAddress: v });
+        if (!r.ok) throw new Error(r.error||'Fejl');
+        MEMBER_JOB.startAddress = r.startAddress;
+        MEMBER_JOB.distanceKm = '';
+        MEMBER_JOB.distanceOrigin = '';
+        document.getElementById('jobKmDisplay').textContent = '—';
+        const newOrigin = r.startAddress || (SESSION.member && SESSION.member.address) || '';
+        document.getElementById('jobKmOrigin').textContent = newOrigin || 'din hjemmeadresse';
+        _updateJobMap(MEMBER_JOB.contract && MEMBER_JOB.contract.venue, newOrigin);
+        const recalcBtn = document.getElementById('jobKmRecalc');
+        if (recalcBtn) recalcBtn.textContent = '↻ Beregn km';
+        toast('Startadresse gemt — tryk "Beregn km" for at opdatere afstand');
+      } catch(e){ toast(e.message||String(e),'err'); }
+      finally { saveBtn.disabled = false; saveBtn.textContent = 'Gem'; }
+    };
+    attachDawaAutocomplete(document.getElementById('jobStartAddr'));
+    const recalcBtn = document.getElementById('jobKmRecalc');
+    if (recalcBtn) recalcBtn.onclick = async ()=>{
+      recalcBtn.disabled = true;
+      const origText = recalcBtn.textContent;
+      recalcBtn.textContent = '↻ Beregner…';
+      try {
+        const r = await apiPost('recalcJobDistance', { attendanceId: MEMBER_JOB.attendanceId });
+        if (!r.ok) throw new Error(r.error||'Fejl');
+        MEMBER_JOB.distanceKm = r.distanceKm;
+        MEMBER_JOB.distanceOrigin = r.distanceOrigin;
+        document.getElementById('jobKmDisplay').textContent = _kmLabel(r.distanceKm) || '—';
+        document.getElementById('jobKmOrigin').textContent = r.distanceOrigin || 'din hjemmeadresse';
+        recalcBtn.textContent = '↻ Re-beregn';
+        toast('Km beregnet: ' + (_kmLabel(r.distanceKm)||'—'));
+      } catch(e){
+        recalcBtn.textContent = origText;
+        toast(e.message||String(e),'err');
+      } finally { recalcBtn.disabled = false; }
+    };
   } catch(e){ toast(e.message,'err'); }
 }
 
@@ -2050,6 +2293,7 @@ async function loadHonorar(){
     document.getElementById('hStats').innerHTML = `
       <div class="stat-tile"><div class="label">Total optjent</div><div class="value warm">${fmtMoney(d.total)}</div></div>
       <div class="stat-tile"><div class="label">Antal jobs</div><div class="value">${d.rows.length}</div></div>
+      <div class="stat-tile"><div class="label">Total kørsel</div><div class="value">${_kmLabel(d.totalKm) || '—'}</div></div>
       <div class="stat-tile"><div class="label">Til konto</div><div class="value mono" style="font-size:18px;font-family:var(--font-mono)">${escapeHtml(d.member.regAccount||'—')}</div></div>
     `;
     if (!d.rows.length){
@@ -2057,14 +2301,14 @@ async function loadHonorar(){
       return;
     }
     // Gem data så download-knappen kan bruge dem
-    window._lastHonorar = { rows: d.rows, total: d.total, member: d.member, fra, til };
+    window._lastHonorar = { rows: d.rows, total: d.total, totalKm: d.totalKm, member: d.member, fra, til };
     document.getElementById('hRows').innerHTML = `
       <div style="padding:14px 18px;border-bottom:1px solid var(--ink-line);display:flex;justify-content:flex-end;gap:8px">
         <button class="btn btn-ghost btn-sm" onclick="memberPreviewHonorar()">👁 Forhåndsvis</button>
         <button class="btn btn-primary btn-sm" onclick="memberDownloadHonorar()">↓ Download PDF</button>
       </div>
       <table class="table">
-        <thead><tr><th>Spilledato</th><th>Jobtitel</th><th>Adresse</th><th style="text-align:right">Hyre</th></tr></thead>
+        <thead><tr><th>Spilledato</th><th>Jobtitel</th><th>Adresse</th><th style="text-align:right">Km</th><th style="text-align:right">Hyre</th></tr></thead>
         <tbody>
           ${d.rows.map(r=>{
             const venue = r.venue || {};
@@ -2073,9 +2317,10 @@ async function loadHonorar(){
               <td class="mono" style="color:var(--amber);white-space:nowrap">${fmtDate(r.date)}</td>
               <td><span class="serif" style="font-size:15px">${escapeHtml(venue.name||'—')}</span></td>
               <td style="font-size:12px;color:var(--cream-mute)">${escapeHtml(adresse)}</td>
+              <td style="text-align:right" class="mono">${escapeHtml(_kmLabel(r.distanceKm)||'—')}</td>
               <td style="text-align:right" class="mono">${fmtMoney(r.share)}</td>
             </tr>`;}).join('')}
-          <tr style="background:rgba(232,168,103,.06)"><td colspan="3" class="mono" style="text-align:right;color:var(--amber)">TOTAL</td><td style="text-align:right" class="mono"><strong>${fmtMoney(d.total)}</strong></td></tr>
+          <tr style="background:rgba(232,168,103,.06)"><td colspan="3" class="mono" style="text-align:right;color:var(--amber)">TOTAL</td><td style="text-align:right" class="mono">${escapeHtml(_kmLabel(d.totalKm)||'—')}</td><td style="text-align:right" class="mono"><strong>${fmtMoney(d.total)}</strong></td></tr>
         </tbody>
       </table>`;
   } catch(e){ toast(e.message,'err'); }
@@ -2101,7 +2346,9 @@ function pdfPrintStyles(){
     .pdf-attendee{background:#EFE3CC;padding:2px 7px;border-radius:3px;font-size:11px;color:#0F213C}
     .pdf-foot{margin-top:18px;padding-top:12px;border-top:1px solid #E5DAC4;font-size:10px;color:#6A5A40}
     ol{padding-left:16px;line-height:1.7} li{margin-bottom:6px}
-    @media print{body{padding:0}@page{margin:10mm;size:A4}}
+    .cpr-screen{font-family:'JetBrains Mono',monospace;letter-spacing:.05em;color:#8A6F4D}
+    .cpr-print{display:none}
+    @media print{body{padding:0}@page{margin:10mm;size:A4}.cpr-screen{display:none}.cpr-print{display:inline}}
   `;
 }
 
@@ -2149,7 +2396,7 @@ function downloadContractOverviewPDF(){
   openPrintWindow(`Oversigt — ${(EDITING.venue&&EDITING.venue.name)||'DMDT'}`, firstPage.outerHTML);
 }
 
-function _buildHonorarBody(rows, total, member, fra, til){
+function _buildHonorarBody(rows, total, member, fra, til, totalKm){
   const logoUrl = DMD_LOGO_B64;
   const rowsHtml = rows.map(r=>{
     const venue = r.venue || {};
@@ -2160,6 +2407,7 @@ function _buildHonorarBody(rows, total, member, fra, til){
         <span style="font-family:'Instrument Serif',serif;font-size:15px">${escapeHtml(venue.name||'—')}</span>
       </td>
       <td style="padding:7px 10px;border-bottom:1px solid #E5DAC4;font-size:11px;color:#4A4A4A">${escapeHtml(adresse)}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid #E5DAC4;text-align:right;font-family:'JetBrains Mono',monospace">${escapeHtml(_kmLabel(r.distanceKm)||'—')}</td>
       <td style="padding:7px 10px;border-bottom:1px solid #E5DAC4;text-align:right;font-family:'JetBrains Mono',monospace">${fmtMoney(r.share)}</td>
     </tr>`;}).join('');
   const body = `<style>table{width:100%;border-collapse:collapse}
@@ -2176,9 +2424,9 @@ function _buildHonorarBody(rows, total, member, fra, til){
     <div class="pdf-text" style="color:#8A6F4D;margin-bottom:16px">Periode: ${fmtDate(fra)} – ${fmtDate(til)}</div>
     <div class="pdf-divider"></div>
     <table>
-      <thead><tr><th>Spilledato</th><th>Jobtitel</th><th>Adresse</th><th style="text-align:right">Hyre</th></tr></thead>
+      <thead><tr><th>Spilledato</th><th>Jobtitel</th><th>Adresse</th><th style="text-align:right">Km</th><th style="text-align:right">Hyre</th></tr></thead>
       <tbody>${rowsHtml}
-        <tr class="total-row"><td colspan="3" style="text-align:right;padding:8px 10px">TOTAL</td><td style="text-align:right;padding:8px 10px">${fmtMoney(total)}</td></tr>
+        <tr class="total-row"><td colspan="3" style="text-align:right;padding:8px 10px">TOTAL</td><td style="text-align:right;padding:8px 10px">${escapeHtml(_kmLabel(totalKm)||'—')}</td><td style="text-align:right;padding:8px 10px">${fmtMoney(total)}</td></tr>
       </tbody>
     </table>
     <div class="pdf-foot">Danser med Drenge Tribute · Udskrevet ${new Date().toLocaleDateString('da-DK')} · Til brug ved årsregnskab</div>
@@ -2186,12 +2434,12 @@ function _buildHonorarBody(rows, total, member, fra, til){
   return body;
 }
 
-function downloadHonorarPDF(rows, total, member, fra, til){
-  openPrintWindow(`Honorar — ${escapeHtml(member.name)}`, _buildHonorarBody(rows, total, member, fra, til));
+function downloadHonorarPDF(rows, total, member, fra, til, totalKm){
+  openPrintWindow(`Honorar — ${escapeHtml(member.name)}`, _buildHonorarBody(rows, total, member, fra, til, totalKm));
 }
 
-function previewHonorarPDF(rows, total, member, fra, til){
-  openPreviewWindow(`Honorar — ${escapeHtml(member.name)}`, _buildHonorarBody(rows, total, member, fra, til));
+function previewHonorarPDF(rows, total, member, fra, til, totalKm){
+  openPreviewWindow(`Honorar — ${escapeHtml(member.name)}`, _buildHonorarBody(rows, total, member, fra, til, totalKm));
 }
 
 function _buildFakturaHtml(c, fakturaNr){
@@ -2208,13 +2456,17 @@ function _buildFakturaHtml(c, fakturaNr){
     <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
       <tr>
         <td style="vertical-align:top;font-size:12px;line-height:1.6;color:#2A2A2A;width:55%">
-          ${escapeHtml(arr.name||'')}<br>
-          ${escapeHtml(arr.address||'')}<br>
-          ${escapeHtml([arr.postnr, arr.city].filter(Boolean).join(' '))}
+          <strong>Danser med Drenge Tribute</strong><br>
+          V/ Peter Bang-rønne<br>
+          Idrætsvænget 19<br>
+          6855 Outrup<span class="cpr-block"><br>CPR: <span class="cpr-screen">XXXXXX-XXXX</span><span class="cpr-print" data-cpr-slot></span></span>
         </td>
         <td style="vertical-align:top;font-size:12px;line-height:1.7;color:#2A2A2A;text-align:left">
-          Fakturanr.<span style="color:#8A6F4D">.........................................</span> <strong>${escapeHtml(fakturaNr)}</strong><br>
-          Fakturadato<span style="color:#8A6F4D">........................</span> ${escapeHtml(fmtDate(c.date))}
+          ${escapeHtml(arr.name||'')}<br>
+          ${escapeHtml(arr.address||'')}<br>
+          ${escapeHtml([arr.postnr, arr.city].filter(Boolean).join(' '))}<br>
+          <br>
+          Dato<span style="color:#8A6F4D">.............................................</span> ${escapeHtml(fmtDate(c.date))}
         </td>
       </tr>
     </table>
@@ -2227,13 +2479,35 @@ function _buildFakturaHtml(c, fakturaNr){
       Betalingsbetingelser: <strong>${escapeHtml(paymentTxt)}</strong><br>
       Beløbet indbetales til vores bank Sparekassen for Nr. Nebel og Omegn<br>
       Reg: 9682&nbsp;&nbsp;Kto: 0001465171<br>
-      Fakturanr. <strong>${escapeHtml(fakturaNr)}</strong> bedes anført ved overførsel<br>
-      Beløbet indberettes på Cpr. 200773-2921
+      ${escapeHtml((c.venue && c.venue.name) || 'Spillested')} bedes anført ved overførsel<span class="cpr-block"><br>Beløbet indberettes på Cpr. <span class="cpr-screen">XXXXXX-XXXX</span><span class="cpr-print" data-cpr-slot></span></span>
     </div>
     <div class="pdf-foot" style="margin-top:24px;border-top:1px solid #D9CFBE;padding-top:10px">
       Danser med Drenge Tribute · Jesper Steensbeck · Frejasvej 65 · 6840 Oksbøl · Tel: 60 24 60 60 · Email: jesper@steensbeck.dk
     </div>
   </div>`;
+}
+
+// Hentes server-side ved klik på Print så CPR ikke ligger i HTML-kildekoden.
+// Caches per session så vi ikke spørger backend gentagne gange ved re-print.
+let _cprCache = null;
+async function printHonorarafregningWithCpr(popup){
+  if (!popup || popup.closed) return;
+  const btn = popup.document.getElementById('printBtn');
+  if (btn){ btn.disabled = true; btn.textContent = '… henter CPR'; }
+  try {
+    if (!_cprCache){
+      const d = await apiPost('getBandCpr');
+      if (!d || !d.ok) throw new Error((d && d.error) || 'Kunne ikke hente CPR');
+      _cprCache = d.cpr;
+    }
+    popup.document.querySelectorAll('[data-cpr-slot]').forEach(el => { el.textContent = _cprCache; });
+    if (btn){ btn.disabled = false; btn.textContent = '🖨 Print / Gem som PDF'; }
+    popup.focus();
+    popup.print();
+  } catch(e){
+    if (btn){ btn.disabled = false; btn.textContent = '🖨 Print / Gem som PDF'; }
+    toast('Kunne ikke hente CPR: '+(e.message||e), 'err');
+  }
 }
 
 function downloadFakturaPDF(){
@@ -2244,11 +2518,11 @@ function downloadFakturaPDF(){
   // ÅBN print-vinduet SYNKRONT for at bevare user-gesture (ellers blokerer browseren popup'en).
   const w = window.open('', '_blank');
   if (!w){ toast('Popup blokeret — tillad popups for denne side og prøv igen','err'); return; }
-  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Faktura</title><style>${pdfPrintStyles()}body{display:flex;align-items:center;justify-content:center;min-height:100vh}.loading{font-family:'Inter',sans-serif;color:#8A6F4D;font-size:14px}</style></head><body><div class="loading">Reserverer fakturanr…</div></body></html>`);
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Honorarafregning</title><style>${pdfPrintStyles()}body{display:flex;align-items:center;justify-content:center;min-height:100vh}.loading{font-family:'Inter',sans-serif;color:#8A6F4D;font-size:14px}</style></head><body><div class="loading">Klargør honorarafregning…</div></body></html>`);
 
   const renderError = (msg) => {
     if (w.closed) return;
-    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Faktura-fejl</title><style>body{font-family:'Inter',sans-serif;padding:40px;color:#0F213C;max-width:520px;margin:0 auto;text-align:center}h2{color:#A04040}</style></head><body><h2>Kunne ikke reservere fakturanr</h2><p>${escapeHtml(msg)}</p><p style="color:#666">Luk vinduet og prøv igen. Der er ikke oprettet nogen række.</p></body></html>`;
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Honorarafregning-fejl</title><style>body{font-family:'Inter',sans-serif;padding:40px;color:#0F213C;max-width:520px;margin:0 auto;text-align:center}h2{color:#A04040}</style></head><body><h2>Kunne ikke klargøre honorarafregning</h2><p>${escapeHtml(msg)}</p><p style="color:#666">Luk vinduet og prøv igen. Der er ikke oprettet nogen række.</p></body></html>`;
     w.document.open(); w.document.write(html); w.document.close();
   };
 
@@ -2257,11 +2531,11 @@ function downloadFakturaPDF(){
     if (w.closed) return;
     const body = _buildFakturaHtml(c, nr);
     const printBar = `<div style="position:fixed;top:0;left:0;right:0;background:#0F213C;color:#fff;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;font-family:'Inter',sans-serif;font-size:13px;z-index:1000" class="no-print">
-      <span>Faktura ${nr} · Tryk <b>Print</b> og vælg "Gem som PDF" for at downloade</span>
-      <button onclick="window.print()" style="background:#fff;color:#0F213C;border:0;padding:8px 16px;border-radius:4px;font-weight:600;cursor:pointer">🖨 Print / Gem som PDF</button>
+      <span>Honorarafregning · CPR frigives først ved klik på Print (lokal kopi). Drive-arkivet er CPR-løst.</span>
+      <button id="printBtn" onclick="window.opener && window.opener.printHonorarafregningWithCpr(window)" style="background:#fff;color:#0F213C;border:0;padding:8px 16px;border-radius:4px;font-weight:600;cursor:pointer">🖨 Print / Gem som PDF</button>
     </div>`;
     const extraStyle = `@media print{.no-print{display:none !important}}body{padding-top:60px}`;
-    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Faktura — ${nr}</title><style>${pdfPrintStyles()}${extraStyle}</style></head><body>${printBar}${body}</body></html>`;
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Honorarafregning</title><style>${pdfPrintStyles()}${extraStyle}</style></head><body>${printBar}${body}</body></html>`;
     w.document.open(); w.document.write(html); w.document.close();
   };
 
@@ -2271,32 +2545,32 @@ function downloadFakturaPDF(){
   apiPost('createInvoice', { contractId: c.id, reserveOnly: true })
     .then(d => {
       if (d && d.ok && d.invoice && d.invoice.invoiceNr){
-        cacheBust('invoices');
+        cacheBust('invoices'); broadcastInvalidate(['invoices']);
         renderInto(d.invoice.invoiceNr);
-        toast(`Faktura ${d.invoice.invoiceNr} ${d.reused ? 'genfundet' : 'oprettet'} — print, gem som PDF og upload den fra Fakturaer-fanen`);
+        toast(`Honorarafregning ${d.reused ? 'genfundet' : 'klar'} — print, gem som PDF og arkivér fra Honorarafregninger-fanen`);
       } else {
         const msg = (d && d.error) || 'ukendt fejl';
         renderError(msg);
-        toast('Kunne ikke reservere fakturanr: '+msg,'err');
+        toast('Kunne ikke klargøre honorarafregning: '+msg,'err');
       }
     })
     .catch(e => {
       const msg = e.message || String(e);
       renderError(msg);
-      toast('Kunne ikke reservere fakturanr: '+msg,'err');
+      toast('Kunne ikke klargøre honorarafregning: '+msg,'err');
     });
 }
 
 function memberDownloadHonorar(){
   const h = window._lastHonorar;
   if (!h || !h.rows.length){ toast('Ingen data — tryk Søg først','err'); return; }
-  downloadHonorarPDF(h.rows, h.total, h.member, h.fra, h.til);
+  downloadHonorarPDF(h.rows, h.total, h.member, h.fra, h.til, h.totalKm);
 }
 
 function memberPreviewHonorar(){
   const h = window._lastHonorar;
   if (!h || !h.rows.length){ toast('Ingen data — tryk Søg først','err'); return; }
-  previewHonorarPDF(h.rows, h.total, h.member, h.fra, h.til);
+  previewHonorarPDF(h.rows, h.total, h.member, h.fra, h.til, h.totalKm);
 }
 
 function _parseTimeStr(s){
@@ -2480,13 +2754,13 @@ async function adminVisHonorar(){
   if (!mid){ toast('Vælg et medlem','err'); return; }
   const resultEl = document.getElementById('ahResult');
   const dlBtn = document.getElementById('ahDownloadBtn');
-  resultEl.innerHTML = '<div class="muted">Henter...</div>';
+  resultEl.innerHTML = '<div class="muted"><span class="spinner"></span>Henter...</div>';
   if (dlBtn) dlBtn.style.display = 'none';
   try {
     const d = await apiPost('getHonorarAdmin', { memberId: mid, fra, til });
     if (!document.getElementById('ahResult')) return;
     if (!d.ok){ toast(d.error||'Fejl','err'); resultEl.innerHTML = ''; return; }
-    window._lastAdminHonorar = { rows: d.rows, total: d.total, member: d.member, fra, til };
+    window._lastAdminHonorar = { rows: d.rows, total: d.total, totalKm: d.totalKm, member: d.member, fra, til };
     if (!d.rows.length){
       resultEl.innerHTML = '<div class="card"><div class="empty">Ingen jobs i den valgte periode.</div></div>';
       return;
@@ -2500,9 +2774,15 @@ async function adminVisHonorar(){
             <h2 class="serif" style="margin:4px 0 0;font-weight:400;font-size:24px">${escapeHtml(d.member.name)}</h2>
             <div class="muted" style="font-size:13px;margin-top:2px">Periode: ${fmtDate(fra)} – ${fmtDate(til)}</div>
           </div>
-          <div class="stat-tile" style="text-align:right;min-width:160px">
-            <div class="label">Total</div>
-            <div class="value warm">${fmtMoney(d.total)}</div>
+          <div style="display:flex;gap:10px">
+            <div class="stat-tile" style="text-align:right;min-width:120px">
+              <div class="label">Total km</div>
+              <div class="value">${escapeHtml(_kmLabel(d.totalKm)||'—')}</div>
+            </div>
+            <div class="stat-tile" style="text-align:right;min-width:160px">
+              <div class="label">Total</div>
+              <div class="value warm">${fmtMoney(d.total)}</div>
+            </div>
           </div>
         </div>
         <table class="table">
@@ -2510,6 +2790,7 @@ async function adminVisHonorar(){
             <th>Dato</th>
             <th>Spillested</th>
             <th>Type</th>
+            <th style="text-align:right">Km</th>
             <th style="text-align:right">Andel</th>
             <th>Status</th>
             <th></th>
@@ -2528,6 +2809,7 @@ async function adminVisHonorar(){
                   ${crew?`<div style="font-size:11px;color:var(--cream-mute)">${escapeHtml(crew)}</div>`:''}
                 </td>
                 <td>${escapeHtml(r.type||'')}</td>
+                <td style="text-align:right" class="mono">${escapeHtml(_kmLabel(r.distanceKm)||'—')}</td>
                 <td style="text-align:right" class="mono">${fmtMoney(r.share)}</td>
                 <td>${statusBadge(r.status)}</td>
                 <td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="adminDownloadHonorarRow(${idx})">↓ PDF</button></td>
@@ -2537,6 +2819,7 @@ async function adminVisHonorar(){
           <tfoot>
             <tr style="border-top:2px solid var(--ink-line)">
               <td colspan="3" style="padding:12px;font-family:var(--font-mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--cream-mute)">Total</td>
+              <td style="padding:12px;text-align:right;font-family:var(--font-mono);font-size:13px;color:var(--cream-mute)">${escapeHtml(_kmLabel(d.totalKm)||'—')}</td>
               <td style="padding:12px;text-align:right;font-family:var(--font-mono);font-size:16px;color:var(--amber)">${fmtMoney(d.total)}</td>
               <td></td>
               <td></td>
@@ -2554,12 +2837,12 @@ async function renderInvoicesList(){
   main.innerHTML = `
     <div class="page-head">
       <div>
-        <h1 class="serif">Fakturaer</h1>
+        <h1 class="serif">Honorarafregninger</h1>
         <div class="lede">Arkiv på Google Drive · markér betalt når penge er på kontoen.</div>
       </div>
     </div>
     <div id="invoicesWrap" class="card" style="padding:0">
-      <div class="muted" style="padding:24px">Henter fakturaer…</div>
+      <div class="muted" style="padding:24px"><span class="spinner"></span>Henter honorarafregninger…</div>
     </div>
   `;
   let invoices;
@@ -2580,20 +2863,20 @@ function drawInvoicesTable(invoices){
   const wrap = document.getElementById('invoicesWrap');
   if (!wrap) return;
   if (!invoices.length){
-    wrap.innerHTML = '<div class="empty" style="padding:32px">Ingen fakturaer endnu — opret én fra en kontrakt via "↓ Faktura"-knappen.</div>';
+    wrap.innerHTML = '<div class="empty" style="padding:32px">Ingen honorarafregninger endnu — opret én fra en kontrakt via "↓ Honorarafregning"-knappen.</div>';
     return;
   }
   const totalUdest = invoices.filter(i => i.status === 'udestaaende').reduce((s,i)=>s+(Number(i.amount)||0),0);
   const totalBetalt = invoices.filter(i => i.status === 'betalt').reduce((s,i)=>s+(Number(i.amount)||0),0);
   wrap.innerHTML = `
     <div style="display:flex;gap:14px;padding:18px 22px;border-bottom:1px solid var(--ink-line);flex-wrap:wrap">
-      <div class="stat-tile" style="flex:1;min-width:140px"><div class="label">Antal fakturaer</div><div class="value">${invoices.length}</div></div>
+      <div class="stat-tile" style="flex:1;min-width:140px"><div class="label">Antal honorarafregninger</div><div class="value">${invoices.length}</div></div>
       <div class="stat-tile" style="flex:1;min-width:140px"><div class="label">Udestående</div><div class="value warm">${fmtMoney(totalUdest)}</div></div>
       <div class="stat-tile" style="flex:1;min-width:140px"><div class="label">Betalt</div><div class="value" style="color:var(--ok)">${fmtMoney(totalBetalt)}</div></div>
     </div>
     <table class="table">
       <thead><tr>
-        <th>Faktura nr.</th>
+        <th>Afregnings-nr.</th>
         <th>Kontrakt</th>
         <th>Arrangør</th>
         <th>Dato</th>
@@ -2629,10 +2912,10 @@ function drawInvoicesTable(invoices){
             <td style="text-align:right;white-space:nowrap">
               ${i.driveUrl
                 ? `<a href="${escapeHtml(i.driveUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="text-decoration:none">↗ Drive</a>
-                   <button class="btn btn-ghost btn-sm" onclick="uploadInvoicePdf('${escapeHtml(i.id)}','${escapeHtml(i.invoiceNr)}')" title="Erstat PDF i Drive">↻ Erstat PDF</button>`
-                : `<button class="btn btn-primary btn-sm" onclick="uploadInvoicePdf('${escapeHtml(i.id)}','${escapeHtml(i.invoiceNr)}')" title="Upload PDF til Drive">↑ Upload PDF</button>`}
+                   <button class="btn btn-ghost btn-sm" onclick="uploadInvoicePdf('${escapeHtml(i.id)}','${escapeHtml(i.invoiceNr)}')" title="Genopret Drive-arkiv uden CPR">↻ Genopret Drive</button>`
+                : `<button class="btn btn-primary btn-sm" onclick="uploadInvoicePdf('${escapeHtml(i.id)}','${escapeHtml(i.invoiceNr)}')" title="Arkiver til Drive uden CPR">☁ Arkivér til Drive</button>`}
               ${toggle}
-              <button class="btn btn-danger btn-sm" onclick="deleteInvoice('${escapeHtml(i.id)}','${escapeHtml(i.invoiceNr)}')" title="Slet faktura">🗑</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteInvoice('${escapeHtml(i.id)}','${escapeHtml(i.invoiceNr)}')" title="Slet honorarafregning">🗑</button>
             </td>
           </tr>`;
         }).join('')}
@@ -2641,7 +2924,33 @@ function drawInvoicesTable(invoices){
   `;
 }
 
-function uploadInvoicePdf(invoiceId, invoiceNr){
+/**
+ * Arkivér honorarafregning på Drive — uden CPR.
+ * Renderer HTML klientside og fjerner CPR-blokke før HTML sendes til server.
+ * Server konverterer til PDF og erstatter Drive-filen.
+ */
+async function uploadInvoicePdf(invoiceId, invoiceNr){
+  // Find faktura → kontrakt-id
+  const inv = (CACHE.invoices||[]).find(x => String(x.id) === String(invoiceId));
+  if (!inv){ toast('Honorarafregning ikke fundet','err'); return; }
+  toast(`Arkiverer ${invoiceNr} til Drive…`);
+  try {
+    const d = await apiPost('getContract', { id: inv.contractId });
+    if (!d.ok) throw new Error(d.error||'Kunne ikke hente kontrakt');
+    const c = d.contract;
+    // Render samme HTML som ved print, men fjern CPR-blokke før upload
+    const body = _buildFakturaHtml(c, invoiceNr);
+    const fullHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>${pdfPrintStyles()}</style></head><body>${body}</body></html>`;
+    const stripped = fullHtml.replace(/<span class="cpr-block">[\s\S]*?<\/span>\s*<\/span>/g, '');
+    const r = await apiPost('archiveInvoiceToDrive', { invoiceId: invoiceId, html: stripped });
+    if (!r.ok) throw new Error(r.error||'Drive-fejl');
+    cacheBust('invoices'); broadcastInvalidate(['invoices']);
+    toast(`${invoiceNr} arkiveret på Drive (uden CPR)`);
+    renderInvoicesList();
+  } catch(e){ toast('Fejl: '+(e.message||e), 'err'); }
+}
+
+function _legacyUploadInvoicePdfDisabled(invoiceId, invoiceNr){
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = 'application/pdf,.pdf';
@@ -2668,7 +2977,7 @@ function uploadInvoicePdf(invoiceId, invoiceNr){
       apiPost('uploadInvoicePdf', { id: invoiceId, pdfBase64: base64 })
         .then(d => {
           if (d && d.ok){
-            cacheBust('invoices');
+            cacheBust('invoices'); broadcastInvalidate(['invoices']);
             toast(`Faktura ${invoiceNr} uploadet til Drive`);
             renderInvoicesList();
           } else {
@@ -2684,12 +2993,12 @@ function uploadInvoicePdf(invoiceId, invoiceNr){
 }
 
 async function deleteInvoice(id, nr){
-  if (!confirm(`Slet faktura ${nr}?\n\nFakturaen markeres som slettet i historikken, Drive-filen flyttes til papirkurv, og fakturanummeret bevares som brugt.`)) return;
+  if (!confirm(`Slet honorarafregning ${nr}?\n\nDrive-filen flyttes til papirkurv og nummeret frigives — næste nye honorarafregning genbruger det første ledige nummer.`)) return;
   try {
     const d = await apiPost('deleteInvoice', { id: id });
     if (!d.ok){ toast(d.error||'Fejl','err'); return; }
-    toast('Faktura slettet · Drive-fil flyttet til papirkurv');
-    cacheBust('invoices');
+    toast('Honorarafregning slettet · Drive-fil flyttet til papirkurv');
+    cacheBust('invoices'); broadcastInvalidate(['invoices']);
     renderInvoicesList();
   } catch(e){ toast(e.message,'err'); }
 }
@@ -2699,7 +3008,7 @@ async function setInvoiceStatus(id, status){
     const d = await apiPost('updateInvoiceStatus', { id: id, status: status });
     if (!d.ok){ toast(d.error||'Fejl','err'); return; }
     toast(status === 'betalt' ? 'Markeret som betalt' : 'Genåbnet');
-    cacheBust('invoices');
+    cacheBust('invoices'); broadcastInvalidate(['invoices']);
     renderInvoicesList();
   } catch(e){ toast(e.message,'err'); }
 }
@@ -2707,14 +3016,14 @@ async function setInvoiceStatus(id, status){
 async function adminDownloadHonorar(){
   const h = window._lastAdminHonorar;
   if (!h || !h.rows.length){ toast('Tryk "Vis oversigt" først','err'); return; }
-  downloadHonorarPDF(h.rows, h.total, h.member, h.fra, h.til);
+  downloadHonorarPDF(h.rows, h.total, h.member, h.fra, h.til, h.totalKm);
 }
 
 function adminDownloadHonorarRow(idx){
   const h = window._lastAdminHonorar;
   if (!h || !h.rows[idx]) return;
   const row = h.rows[idx];
-  downloadHonorarPDF([row], row.share||0, h.member, row.date, row.date);
+  downloadHonorarPDF([row], row.share||0, h.member, row.date, row.date, Number(row.distanceKm)||0);
 }
 
 // ─── Wire up ──────────────────────────────────────────────────────
